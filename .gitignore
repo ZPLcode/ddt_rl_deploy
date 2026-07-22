@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# ROS / colcon (this repo is overlaid into an external ws; nothing built here)
+build/
+install/
+log/
+
+# Sim / runtime junk
+MUJOCO_LOG.TXT
+*.log
+
+# Editor
+.vscode/
+.idea/
+
+# NOTE: *.onnx policies ARE tracked on purpose (repo is self-contained).
