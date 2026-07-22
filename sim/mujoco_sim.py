@@ -22,6 +22,7 @@ Loop architecture follows the DeepRobotics reference simulators
 """
 
 import argparse
+import os
 import threading
 import time
 
@@ -34,8 +35,10 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import JointState, Imu
 from ddt_msgs.msg import JointControlCommand
 
-DEFAULT_SCENE = ('/home/zhepeng/DDT/DDT_lab/ddt_ros2_control/urdfs/'
-                 'd1_description/mujoco/scene_cargo_out.xml')
+# Resolved relative to this file so the repo is self-contained (no hardcoded
+# absolute paths).  Bare d1 model; pass --scene to point at another mjcf.
+DEFAULT_SCENE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'assets', 'd1', 'mujoco', 'scene.xml')
 
 # Initial squat pose (rl_flat default_joint_angles).  Order is the MJCF
 # actuator order, which equals the controllers.yaml joint order:
