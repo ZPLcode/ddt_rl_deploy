@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-# Standalone ROS 2 node: subscribes to joint_states / IMU / cmd_twist / cmd_pose,
-# builds observations identical to FSMState_RL::update_observations(), and runs
-# ONNX inference.  Supports policy_type: np3o / ppo / asap.
+# Transport shell for the RL deploy stack: subscribes to joint_states / IMU /
+# cmd_twist / cmd_pose, snapshots them into a plain RobotState/Command, and hands
+# them to the transport-free PolicyEngine (policy_engine.py) which does all the
+# observation assembly + ONNX inference + decode.  This node knows only ROS 2;
+# the engine knows only the math — the same split DeepRobotics uses between
+# main.cpp and lite3_policy_runner.hpp, and the seam a future non-rclpy
+# transport (ddt_sdk / cyclonedds) plugs into.
 
 import math
 import os
-import sys
+import signal
+import time
 import yaml
 
 from ament_index_python.packages import get_package_share_directory
@@ -18,32 +23,14 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Imu, JointState
 
-try:
-    import onnxruntime as ort
-except ImportError:
-    print("onnxruntime not found.  Install with: pip install onnxruntime")
-    sys.exit(1)
-
-
-# --------------------------------------------------------------------------- #
-#  Math helpers
-# --------------------------------------------------------------------------- #
-
-def quat_to_rotation_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
-    """Quaternion (w, x, y, z) → 3x3 rotation matrix (body → world)."""
-    return np.array([
-        [1 - 2*(y*y + z*z),  2*(x*y - w*z),      2*(x*z + w*y)],
-        [2*(x*y + w*z),      1 - 2*(x*x + z*z),  2*(y*z - w*x)],
-        [2*(x*z - w*y),      2*(y*z + w*x),      1 - 2*(x*x + y*y)],
-    ], dtype=np.float32)
-
-
-def euler_from_quat(w: float, x: float, y: float, z: float):
-    """Quaternion (w, x, y, z) → (roll, pitch, yaw) radians."""
-    roll  = math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
-    pitch = math.asin(max(-1.0, min(1.0, 2*(w*y - z*x))))
-    yaw   = math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
-    return roll, pitch, yaw
+from policy_engine import (
+    Command,
+    JointCommand,
+    PolicyConfig,
+    PolicyEngine,
+    RobotState,
+    euler_from_quat,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -55,24 +42,26 @@ class RLInferenceNode(Node):
         super().__init__('rl_inference_node')
         self._declare_params()
         self._load_params()
-        self._init_onnx()
-        self._init_state()
+        self._engine = PolicyEngine(self._build_config(), logger=self.get_logger())
+        self._init_caches()
         robot_ns = os.environ.get('ROBOT_NS', '').strip('/')
         self._tp = (lambda t: f'{robot_ns}/{t}') if robot_ns else (lambda t: t)
         self._create_subscriptions()
         self._joint_cmd_pub = self.create_publisher(
             JointControlCommand, self._tp('command/joint_command'), 10)
-        # Own-clock control loop (the pattern every reference deploy uses:
-        # LeggedLab RecurrentThread / roboparty SCHED_FIFO loops / rl_sar
-        # LoopFunc / sdk_deploy 5 ms timerfd): a fixed 5 ms wall timer samples
-        # the state cache; inference itself stays paced at control_dt by the
-        # stamp gate in _control_loop, so the policy rate follows physics time.
-        self._timer = self.create_timer(0.005, self._timer_cb)
+        # Two wall-clock timers (DeepRobotics / LeggedLab / rl_sar pattern):
+        # inference at control_dt (the trained policy rate) + publish/decode at
+        # 200 Hz so the wheel P-mode -kd*velocity damping tracks live velocity.
+        # Both read the callback-filled state cache; no message-stamp gate, so
+        # this assumes the state source runs at real time (the sim paces itself
+        # to wall-clock; a real robot always does).
+        self._infer_timer = self.create_timer(self._control_dt, self._infer_cb)
+        self._publish_timer = self.create_timer(0.005, self._publish_cb)
         self.get_logger().info(
             f'RLInferenceNode ready | policy={self._policy_type}'
             f' num_actions={self._num_actions} history_len={self._history_len}'
-            f' control_dt={self._control_dt:.4f}s ({1.0 / self._control_dt:.1f}Hz, time-gated)'
-            f' loop=5ms-timer+state-cache'
+            f' control_dt={self._control_dt:.4f}s ({1.0 / self._control_dt:.1f}Hz infer)'
+            f' loop=wall-clock infer@{1.0 / self._control_dt:.0f}Hz+publish@200Hz'
             f' ns={robot_ns or "(none)"}'
         )
 
@@ -200,10 +189,6 @@ class RLInferenceNode(Node):
             self._wheel_joints = set(wheel_names_from_yaml)
             self.get_logger().info(f'wheel_joints from YAML wheel_names: {self._wheel_joints}')
         elif isinstance(wheel_idx_from_yaml, list) and self._joint_names:
-            # d1's controllers.yaml provides wheel_indices (the C++ controller
-            # reads indices), NOT wheel_names.  Missing this left wheels position-
-            # controlled at kp=60 with their angle leaking into dof_pos -> the
-            # policy diverged and the legs twisted up.
             self._wheel_joints = {self._joint_names[i] for i in wheel_idx_from_yaml
                                   if 0 <= i < len(self._joint_names)}
             self.get_logger().info(
@@ -250,49 +235,61 @@ class RLInferenceNode(Node):
         self._output_torque_scale = float(cfg.get('output_torque_scale', 1.0))
         self._episode_length = float(y('episode_length', 'episode_length'))
 
+        # transform_up params (mirrors FSMState_TransformUp): fold-then-stand
+        # linear ramps with dedicated gains + feed-forward, wheels damped only.
+        tu = self._find_key_recursive(full_yaml, 'transform_up')
+        tu = tu if isinstance(tu, dict) else {}
+        n = len(self._joint_names)
+        self._tu_fold_jpos  = np.array(tu.get('fold_jpos',  []), dtype=np.float32)
+        self._tu_stand_jpos = np.array(tu.get('stand_jpos', []), dtype=np.float32)
+        self._tu_ff = np.array(tu.get('ff_torque', []), dtype=np.float32)
+        self._tu_kp = np.array(tu.get('joint_kp',  []), dtype=np.float32)
+        self._tu_kd = np.array(tu.get('joint_kd',  []), dtype=np.float32)
+        self._tu_fold_timer  = float(tu.get('fold_timer',  2.0))
+        self._tu_stand_timer = float(tu.get('stand_timer', 2.0))
+        self._tu_ok = n > 0 and all(
+            len(a) == n for a in (self._tu_fold_jpos, self._tu_stand_jpos,
+                                  self._tu_ff, self._tu_kp, self._tu_kd))
+        # C++ gates the rl handoff 100 update cycles after the ramps finish.
+        update_rate = self._find_key_recursive(full_yaml, 'update_rate')
+        self._tu_settle = 100.0 / float(update_rate) if update_rate else 0.25
+        if not self._tu_ok:
+            self.get_logger().warning(
+                'transform_up params missing/mismatched — starting directly in rl mode')
+
+    def _build_config(self) -> PolicyConfig:
+        """Pack the loaded ROS params into the transport-free engine config."""
+        return PolicyConfig(
+            onnx_path=self._onnx_path,
+            policy_type=self._policy_type,
+            output_name=self._output_name,
+            num_actions=self._num_actions,
+            history_len=self._history_len,
+            obs_names=self._obs_names,
+            cmd_names=self._cmd_names,
+            cmd_scale=self._cmd_scale,
+            cmd_gain=self._cmd_gain,
+            cmd_min=self._cmd_min,
+            cmd_max=self._cmd_max,
+            ang_vel_scale=self._ang_vel_scale,
+            dof_pos_scale=self._dof_pos_scale,
+            dof_vel_scale=self._dof_vel_scale,
+            wheel_joints=self._wheel_joints,
+            default_angles=self._default_angles,
+            action_scales=self._action_scales,
+            joint_kp=self._joint_kp,
+            joint_kd=self._joint_kd,
+            control_type=self._control_type,
+            joint_names=self._joint_names,
+            episode_length=self._episode_length,
+            control_dt=self._control_dt,
+        )
+
     # ----------------------------------------------------------------------- #
-    #  ONNX session
+    #  Sensor caches (filled by callbacks, snapshotted by the timer)
     # ----------------------------------------------------------------------- #
 
-    def _init_onnx(self):
-        if self._onnx_path:
-            self._session = ort.InferenceSession(self._onnx_path)
-            self._input_names = [i.name for i in self._session.get_inputs()]
-            self.get_logger().info(
-                f'Loaded model: {self._onnx_path} | inputs={self._input_names}')
-        else:
-            self._session = None
-            self.get_logger().warn('onnx_path not set — inference disabled')
-
-    # ----------------------------------------------------------------------- #
-    #  State initialisation
-    # ----------------------------------------------------------------------- #
-
-    def _obs_dim(self, name: str) -> int:
-        if name in ('ang_vel', 'gravity'):
-            return 3
-        if name == 'commands':
-            return len(self._cmd_names)
-        if name in ('dof_pos', 'dof_vel', 'last_actions'):
-            return self._num_actions
-        if name == 'dof_pos_nwp':
-            return self._num_actions - len(self._wheel_joints)
-        if name == 'phases':
-            return 6
-        if name in ('ref_motion_phase', 'action_rescale'):
-            return 1
-        raise ValueError(f'Unknown observation name: {name}')
-
-    def _init_state(self):
-        # current observations
-        self._obs = {n: np.zeros(self._obs_dim(n), dtype=np.float32)
-                     for n in self._obs_names}
-        # history: shape (history_len, obs_dim), row 0 = oldest, row -1 = newest
-        self._obs_hist = {n: np.zeros((self._history_len, self._obs_dim(n)), dtype=np.float32)
-                         for n in self._obs_names}
-        self._last_actions = np.zeros(self._num_actions, dtype=np.float32)
-
-        # sensor caches
+    def _init_caches(self):
         self._gyro      = np.zeros(3, dtype=np.float32)
         self._quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self._joint_pos: dict[str, float] = {}
@@ -300,14 +297,18 @@ class RLInferenceNode(Node):
         self._twist_linear  = np.zeros(3, dtype=np.float32)
         self._twist_angular = np.zeros(3, dtype=np.float32)
         self._pose_rpy      = np.zeros(3, dtype=np.float32)
-
+        self._state_stamp: float | None = None   # stamp of latest cached joint_states
+        self._inferred_once = False               # gate publishing until first inference
         self._iter = 0
-        self._current_time = 0.0
-        self._current_height = 0.0  # integrated base_height command
-        self._infer_dt: float = 0.02          # actual elapsed time between inferences
-        self._start_stamp: float | None = None
-        self._last_infer_stamp: float | None = None   # stamp of last inference (None = not yet)
-        self._state_stamp: float | None = None        # stamp of latest cached joint_states
+        # Mode sequence: standup -> rl -> (fault/exit) damping.  A plain string
+        # instead of FSM state classes — same behaviour as transform_up/passive,
+        # a fraction of the machinery.
+        self._mode = 'standup' if self._tu_ok else 'rl'
+        self._su_phase = None       # None -> 'fold' -> 'stand'
+        self._su_q0 = None          # measured pose at standup entry
+        self._su_fold_target = None
+        self._su_fold_dur = 0.0
+        self._su_t0 = 0.0
 
     # ----------------------------------------------------------------------- #
     #  Subscriptions
@@ -331,24 +332,12 @@ class RLInferenceNode(Node):
         self._gyro = np.array([v.x, v.y, v.z], dtype=np.float32)
 
     def _joint_cb(self, msg: JointState):
-        # Cache-only: control runs on its own timer (_timer_cb), never inside
-        # this callback.  Running control here would tie the control cadence to
-        # joint_states arrival timing, inheriting any burstiness of the
-        # transport (e.g. a render-coupled simulator).
         for name, pos, vel in zip(msg.name, msg.position, msg.velocity):
             self._joint_pos[name] = float(pos)
             self._joint_vel[name] = float(vel)
         self._state_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
-    def _timer_cb(self):
-        if self._state_stamp is None:
-            return  # nothing to control until the first joint_states arrives
-        self._control_loop(self._state_stamp)
-
     def _twist_cb(self, msg: Twist):
-        # keyboard_controller and the C++ rl_controller both publish
-        # geometry_msgs/Twist (not TwistStamped); DDS matches by type, so a
-        # mismatch silently drops every velocity command.
         self._twist_linear  = np.array([msg.linear.x,  msg.linear.y,  msg.linear.z],  dtype=np.float32)
         self._twist_angular = np.array([msg.angular.x, msg.angular.y, msg.angular.z], dtype=np.float32)
 
@@ -358,253 +347,156 @@ class RLInferenceNode(Node):
         self._pose_rpy = np.array([r, p, y], dtype=np.float32)
 
     # ----------------------------------------------------------------------- #
-    #  Observation update  (mirrors FSMState_RL::update_observations)
+    #  Control tick: snapshot caches → engine → publish
     # ----------------------------------------------------------------------- #
 
-    def _update_observations(self):
-        # 1. Shift history — save current (old) obs into history ring
-        if self._history_len == 1:
-            for n in self._obs_names:
-                self._obs_hist[n][0] = self._obs[n]
-        else:
-            for n in self._obs_names:
-                self._obs_hist[n][:-1] = self._obs_hist[n][1:]   # shift towards row 0
-                self._obs_hist[n][-1]  = self._obs[n]             # newest at tail
+    def _snapshot(self):
+        """Take a plain RobotState/Command snapshot of the current caches.
+        Single-threaded executor: callbacks never interleave with the timers,
+        so no lock is needed."""
+        state = RobotState(
+            stamp=self._state_stamp,
+            gyro=self._gyro,
+            quat_wxyz=self._quat_wxyz,
+            joint_pos=self._joint_pos,
+            joint_vel=self._joint_vel,
+        )
+        cmd = Command(
+            twist_linear=self._twist_linear,
+            twist_angular=self._twist_angular,
+            pose_rpy=self._pose_rpy,
+        )
+        return state, cmd
 
-        # 2. Compute new observations from sensor data
-        #    NOTE: self._obs[n] still holds the PREVIOUS value here,
-        #    which is intentional for the ang_vel low-pass filter below.
-        for n in self._obs_names:
-            if n == 'ang_vel':
-                # 0.03/0.97 low-pass filter matching C++ implementation
-                raw = self._gyro * self._ang_vel_scale
-                self._obs['ang_vel'] = 0.03 * self._obs['ang_vel'] + 0.97 * raw
-
-            elif n == 'gravity':
-                w, x, y, z = self._quat_wxyz
-                R = quat_to_rotation_matrix(w, x, y, z)
-                # C++ quaternionToRotationMatrix() transposes the matrix (R_w2b),
-                # then multiplies by [0,0,-1], giving gravity in body frame.
-                # Python quat_to_rotation_matrix returns R_b2w, so we must transpose.
-                self._obs['gravity'] = R.T @ np.array([0.0, 0.0, -1.0], dtype=np.float32)
-
-            elif n == 'commands':
-                cmds = np.empty(len(self._cmd_names), dtype=np.float32)
-                for i, cname in enumerate(self._cmd_names):
-                    if cname == 'lin_vel_x':
-                        raw = self._cmd_gain[i] * self._twist_linear[0]
-                    elif cname == 'lin_vel_y':
-                        raw = self._cmd_gain[i] * self._twist_linear[1]
-                    elif cname == 'ang_vel_z':
-                        raw = self._cmd_gain[i] * self._twist_angular[2]
-                    elif cname == 'base_height':
-                        # integrate z velocity command over time (mirrors C++ integrate_height)
-                        self._current_height = float(np.clip(
-                            self._current_height + self._twist_linear[2] * self._infer_dt,
-                            self._cmd_min[i], self._cmd_max[i]))
-                        raw = self._cmd_gain[i] * self._current_height
-                    elif cname == 'head_roll':
-                        raw = self._cmd_gain[i] * self._pose_rpy[0]
-                    elif cname == 'head_pitch':
-                        raw = self._cmd_gain[i] * self._pose_rpy[1]
-                    elif cname == 'head_yaw':
-                        raw = self._cmd_gain[i] * self._pose_rpy[2]
-                    else:
-                        self.get_logger().warn(f'Unknown command: {cname}', once=True)
-                        raw = 0.0
-                    cmds[i] = float(np.clip(raw, self._cmd_min[i], self._cmd_max[i])) \
-                              * self._cmd_scale[i]
-                self._obs['commands'] = cmds
-
-            elif n == 'dof_pos':
-                pos = np.zeros(self._num_actions, dtype=np.float32)
-                for ai, jname in enumerate(self._joint_names[:self._num_actions]):
-                    if jname not in self._wheel_joints:
-                        pos[ai] = (self._joint_pos.get(jname, 0.0)
-                                   - float(self._default_angles[ai]))
-                self._obs['dof_pos'] = pos * self._dof_pos_scale
-
-            elif n == 'dof_pos_nwp':
-                nwp = self._num_actions - len(self._wheel_joints)
-                pos = np.zeros(nwp, dtype=np.float32)
-                idx = 0
-                for ai, jname in enumerate(self._joint_names[:self._num_actions]):
-                    if jname not in self._wheel_joints and idx < nwp:
-                        pos[idx] = (self._joint_pos.get(jname, 0.0)
-                                    - float(self._default_angles[ai]))
-                        idx += 1
-                self._obs['dof_pos_nwp'] = pos * self._dof_pos_scale
-
-            elif n == 'dof_vel':
-                vel = np.zeros(self._num_actions, dtype=np.float32)
-                for ai, jname in enumerate(self._joint_names[:self._num_actions]):
-                    vel[ai] = self._joint_vel.get(jname, 0.0)
-                self._obs['dof_vel'] = vel * self._dof_vel_scale
-
-            elif n == 'last_actions':
-                self._obs['last_actions'] = self._last_actions.copy()
-
-            elif n == 'phases':
-                t = self._current_time * math.pi / 2.0
-                self._obs['phases'] = np.array([
-                    math.sin(t),     math.cos(t),
-                    math.sin(t/2),   math.cos(t/2),
-                    math.sin(t/4),   math.cos(t/4),
-                ], dtype=np.float32)
-
-            elif n == 'ref_motion_phase':
-                phase_val = (self._current_time / self._episode_length
-                             if self._episode_length > 1e-4 else 0.0)
-                self._obs['ref_motion_phase'] = np.array([phase_val], dtype=np.float32)
-
-            elif n == 'action_rescale':
-                self._obs['action_rescale'] = np.array([0.25], dtype=np.float32)
-
-    # ----------------------------------------------------------------------- #
-    #  Build inference inputs  (mirrors update_forward variants)
-    # ----------------------------------------------------------------------- #
-
-    def _build_np3o(self):
-        """np3o: nn_input0=[1, obs_dim], nn_input1=[1, history_len, obs_dim]."""
-        obs = np.concatenate([self._obs[n] for n in self._obs_names])  # (obs_dim,)
-        hist = np.stack([
-            np.concatenate([self._obs_hist[n][i] for n in self._obs_names])
-            for i in range(self._history_len)
-        ])  # (history_len, obs_dim)
-        return [obs[None], hist[None]]  # (1, obs_dim), (1, history_len, obs_dim)
-
-    def _build_ppo(self):
-        """Single input: [obs_hist (per-obs-name, oldest→newest), obs].
-        Matches FSMState_RLPPO::update_forward."""
-        rows = []
-        for n in self._obs_names:
-            for i in range(self._history_len):
-                rows.append(self._obs_hist[n][i])
-        obs_hist = np.concatenate(rows)
-        obs = np.concatenate([self._obs[n] for n in self._obs_names])
-        combined = np.concatenate([obs_hist, obs])
-        return [combined[None]]
-
-    def _build_asap(self):
-        """Single input with custom ordering (newest→oldest history).
-        Matches FSMState_RLASAP::update_forward."""
-        sorted_hist_names = [
-            'last_actions', 'ang_vel', 'dof_pos', 'dof_vel', 'gravity', 'ref_motion_phase',
-        ]
-        rows = []
-        for n in sorted_hist_names:
-            if n not in self._obs_hist:
-                continue
-            for i in range(self._history_len - 1, -1, -1):   # newest → oldest
-                rows.append(self._obs_hist[n][i])
-        obs_hist = np.concatenate(rows) if rows else np.array([], dtype=np.float32)
-
-        sorted_out_names = [
-            'last_actions', 'ang_vel', 'dof_pos', 'dof_vel',
-            'gravity', 'ref_motion_phase',
-        ]
-        pieces = []
-        for n in sorted_out_names:
-            if n == 'history':
-                pieces.append(obs_hist)
-            elif n in self._obs:
-                pieces.append(self._obs[n])
-        combined = np.concatenate(pieces)
-        return [combined[None]]
-
-    # ----------------------------------------------------------------------- #
-    #  Inference
-    # ----------------------------------------------------------------------- #
-
-    def _run_inference(self):
-        if self._session is None:
+    def _infer_cb(self):
+        # Fires at control_dt (the trained policy rate).  Runs one inference,
+        # updating the engine's cached action.  Only active in rl mode.
+        if self._mode != 'rl' or self._state_stamp is None:
             return
-
-        if self._policy_type == 'np3o':
-            inputs = self._build_np3o()
-        elif self._policy_type == 'ppo':
-            inputs = self._build_ppo()
-        elif self._policy_type == 'asap':
-            inputs = self._build_asap()
-        else:
-            self.get_logger().error(f'Unknown policy_type: {self._policy_type}', once=True)
+        # Posture guard (Lite3 PostureUnsafeCheck thresholds: roll 30deg,
+        # pitch 45deg) -> switch to damping and stay there.
+        w, x, y, z = self._quat_wxyz
+        roll, pitch, _ = euler_from_quat(w, x, y, z)
+        if abs(roll) > math.radians(30.0) or abs(pitch) > math.radians(45.0):
+            self._mode = 'damping'
+            self.get_logger().error(
+                f'posture unsafe (roll={math.degrees(roll):.1f} '
+                f'pitch={math.degrees(pitch):.1f} deg) -> damping')
             return
+        state, cmd = self._snapshot()
+        self._engine.infer(state, cmd)
+        self._inferred_once = True
 
-        feed = {name: data.astype(np.float32)
-                for name, data in zip(self._input_names, inputs)}
-        outputs = self._session.run(None, feed)
-        self._last_actions = np.array(outputs[0], dtype=np.float32).flatten()
+        if self._iter % 100 == 0:
+            actions = (self._engine.last_actions * self._action_scales
+                       + self._default_angles)
+            self.get_logger().debug(f'actions = {np.round(actions, 4).tolist()}')
+        self._iter += 1
+
+    def _publish_cb(self):
+        # Fires at 200 Hz.  Publishes according to the current mode.
+        if self._state_stamp is None:
+            return
+        if self._mode == 'standup':
+            self._publish(self._standup_command())
+        elif self._mode == 'rl':
+            # Decode the latest action with the live state (so the wheel P-mode
+            # damping tracks live velocity).  Waits for the first inference so
+            # we never publish the zero-action default.
+            if not self._inferred_once:
+                return
+            state, _ = self._snapshot()
+            self._publish(self._engine.decode(state))
+        else:  # damping
+            self._publish(self._damping_command())
 
     # ----------------------------------------------------------------------- #
-    #  Publish joint command  (mirrors FSMState_RL::run joint command section)
+    #  Stand-up / damping commands (mirror FSMState_TransformUp / _Passive)
     # ----------------------------------------------------------------------- #
 
-    def _publish_joint_command(self):
+    def _standup_command(self):
+        # Two linear ramps on the wall clock, exactly FSMState_TransformUp:
+        #   fold:  measured q0 -> fold_jpos, duration fold_timer * max|q0-fold|
+        #   stand: fold_jpos -> stand_jpos, duration stand_timer (+settle)
+        # Wheels: position 0 / kp 0 / kd damped, never interpolated.
+        now = time.monotonic()
+        if self._su_phase is None:
+            self._su_q0 = np.array(
+                [self._joint_pos.get(j, 0.0) for j in self._joint_names],
+                dtype=np.float32)
+            self._su_fold_target = self._tu_fold_jpos.copy()
+            for j in self._wheel_joints:          # wheels don't fold (C++ enter())
+                i = self._joint_names.index(j)
+                self._su_fold_target[i] = self._su_q0[i]
+            err = float(np.max(np.abs(self._su_q0 - self._su_fold_target)))
+            self._su_fold_dur = max(self._tu_fold_timer * err, 1e-3)
+            self._su_t0 = now
+            self._su_phase = 'fold'
+            self.get_logger().info(
+                f'standup: fold {self._su_fold_dur:.2f}s then stand {self._tu_stand_timer:.2f}s')
+
+        t = now - self._su_t0
+        if self._su_phase == 'fold':
+            ratio = min(1.0, t / self._su_fold_dur)
+            target = (1.0 - ratio) * self._su_q0 + ratio * self._su_fold_target
+            if t >= self._su_fold_dur:
+                self._su_phase = 'stand'
+                self._su_t0 = now
+        else:  # stand
+            ratio = min(1.0, t / self._tu_stand_timer)
+            target = ((1.0 - ratio) * self._su_fold_target
+                      + ratio * self._tu_stand_jpos)
+            if t >= self._tu_stand_timer + self._tu_settle:
+                self._mode = 'rl'
+                self.get_logger().info('standup complete -> rl')
+
+        jc = JointCommand()
+        for i, jname in enumerate(self._joint_names):
+            jc.name.append(jname)
+            if jname in self._wheel_joints:
+                jc.position.append(0.0)
+                jc.velocity.append(0.0)
+                jc.effort.append(0.0)
+                jc.kp.append(0.0)
+                jc.kd.append(float(self._tu_kd[i]))
+            else:
+                jc.position.append(float(target[i]))
+                jc.velocity.append(0.0)
+                jc.effort.append(float(self._tu_ff[i]))
+                jc.kp.append(float(self._tu_kp[i]))
+                jc.kd.append(float(self._tu_kd[i]))
+        return jc
+
+    def _damping_command(self):
+        # Mirror FSMState_Passive: everything zero, legs kd=5, wheels kd=0.
+        jc = JointCommand()
+        for jname in self._joint_names:
+            jc.name.append(jname)
+            jc.position.append(0.0)
+            jc.velocity.append(0.0)
+            jc.effort.append(0.0)
+            jc.kp.append(0.0)
+            jc.kd.append(0.0 if jname in self._wheel_joints else 5.0)
+        return jc
+
+    def send_damping_burst(self, n=20, period=0.02):
+        # Called on shutdown from main(): the downstream bridge keeps executing
+        # the LAST command forever (official SDK docs), so exiting after a high-
+        # kp command would leave the robot rigid.  Overwrite it with damping.
+        for _ in range(n):
+            self._publish(self._damping_command())
+            time.sleep(period)
+
+    def _publish(self, jc):
         msg = JointControlCommand()
         msg.header.stamp = self.get_clock().now().to_msg()
-
-        for ai, jname in enumerate(self._joint_names):
-            action  = float(self._last_actions[ai])
-            scale   = float(self._action_scales[ai])
-            default = float(self._default_angles[ai])
-            kp      = float(self._joint_kp[ai])
-            kd      = float(self._joint_kd[ai])
-
-            msg.name.append(jname)
-
-            if jname in self._wheel_joints:
-                if self._control_type == 'P':
-                    msg.position.append(0.0)
-                    msg.velocity.append(0.0)
-                    msg.effort.append((action * scale + default) * kp
-                                      - kd * self._joint_vel.get(jname, 0.0))
-                    msg.kp.append(0.0)
-                    msg.kd.append(0.0)
-                else:  # P_V
-                    msg.position.append(0.0)
-                    msg.velocity.append(action * scale)
-                    msg.effort.append(0.0)
-                    msg.kp.append(0.0)
-                    msg.kd.append(kd)
-            else:
-                msg.position.append(action * scale + default)
-                msg.velocity.append(0.0)
-                msg.effort.append(0.0)
-                msg.kp.append(kp)
-                msg.kd.append(kd)
-
+        msg.name = list(jc.name)
+        msg.position = [float(v) for v in jc.position]
+        msg.velocity = [float(v) for v in jc.velocity]
+        msg.effort = [float(v) for v in jc.effort]
+        msg.kp = [float(v) for v in jc.kp]
+        msg.kd = [float(v) for v in jc.kd]
         self._joint_cmd_pub.publish(msg)
-
-    # ----------------------------------------------------------------------- #
-    #  Control loop
-    # ----------------------------------------------------------------------- #
-
-    def _control_loop(self, stamp: float):
-        # initialise on first message
-        if self._start_stamp is None:
-            self._start_stamp = stamp
-
-        self._current_time = stamp - self._start_stamp
-
-        # Time-gated inference: run the policy once per training control period
-        # (self._control_dt), measured on the message stamp (physics time), so the
-        # rate stays at the trained 50 Hz no matter what rate joint_states arrives
-        # at.  The first message always infers so there is a valid action to send.
-        if self._last_infer_stamp is None or \
-                (stamp - self._last_infer_stamp) >= self._control_dt - 1e-6:
-            if self._last_infer_stamp is not None:
-                self._infer_dt = stamp - self._last_infer_stamp
-            self._last_infer_stamp = stamp
-            self._update_observations()
-            self._run_inference()
-
-            # debug log at ~2 Hz (every 0.5 s)
-            if self._iter % 200 == 0:
-                actions = self._last_actions * self._action_scales + self._default_angles
-                self.get_logger().debug(f'actions = {np.round(actions, 4).tolist()}')
-
-        self._publish_joint_command()
-        self._iter += 1
 
 
 # --------------------------------------------------------------------------- #
@@ -612,11 +504,20 @@ class RLInferenceNode(Node):
 def main():
     rclpy.init()
     node = RLInferenceNode()
+    # SIGTERM (kill, systemd stop) should exit through the same damping path
+    # as Ctrl-C, not die with the last high-kp command latched downstream.
+    def _sigterm(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _sigterm)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            node.send_damping_burst()
+        except Exception:
+            pass
         node.destroy_node()
         rclpy.shutdown()
 
