@@ -1,0 +1,112 @@
+# ============================================================================
+# controllers.yaml — template for adding a robot. See docs/ADD_ROBOT.md.
+#
+#   1. cp -r config/_template config/<robot>
+#   2. replace every value tagged  # <FILL>
+#   3. drop the *.onnx next to this file; model under models/<robot>_description/
+#
+# Who reads what:
+#   [SIM]   sim/simbase.py: joints, transform_up.stand_jpos, wheel_indices only
+#   [APP]   deploy/rl_inference.py: FSM gains + the per-policy blocks
+#   [TRAIN] tagged values must match the training export / ONNX. The app
+#           dim-checks obs/action counts, but a wrong scale is silent — copy
+#           from the export, don't eyeball.
+#
+# Values below are a worked example for a 16-DoF wheel-legged quadruped
+# (d1: 4 legs x hip/thigh/calf/wheel). Every list has length N = joint count.
+# ============================================================================
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 400
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+      imu_sensor_broadcaster:
+        type: imu_sensor_broadcaster/IMUSensorBroadcaster
+      robot_rl_controller:            # <FILL> rename to <robot>_rl_controller (ros2_control node name)
+        type: rl_controller/RlController
+
+  imu_sensor_broadcaster:
+    ros__parameters:
+      sensor_name: trunk_imu
+      frame_id: trunk_imu
+
+  joint_state_broadcaster:
+    ros__parameters:
+      # <FILL> every actuated joint, in the training / MJCF actuator order
+      # (mujoco asserts this). Commands are matched by name.
+      joints: &joints
+        - FL_hip_joint
+        - FL_thigh_joint
+        - FL_calf_joint
+        - FL_foot_joint
+        - FR_hip_joint
+        - FR_thigh_joint
+        - FR_calf_joint
+        - FR_foot_joint
+        - RL_hip_joint
+        - RL_thigh_joint
+        - RL_calf_joint
+        - RL_foot_joint
+        - RR_hip_joint
+        - RR_thigh_joint
+        - RR_calf_joint
+        - RR_foot_joint
+
+  robot_rl_controller:                # <FILL> same name as above
+    ros__parameters:
+      joints: *joints                 # reuse the list above (YAML anchor)
+
+      command_interfaces: [position, velocity, effort, kp, kd]
+      state_interfaces:   [position, velocity, effort]
+      sensors:            [trunk_imu]
+
+      # -- hardware limits (from the URDF), length N --
+      torque_limit: [80.0, 80.0, 80.0, 20.0, 80.0, 80.0, 80.0, 20.0, 80.0, 80.0, 80.0, 20.0, 80.0, 80.0, 80.0, 20.0]  # <FILL>
+      wheel_indices: [3, 7, 11, 15]   # <FILL> 0-based indices of wheel joints; [] if fully legged
+      hip_indices:   [0, 4, 8, 12]    # <FILL> 0-based indices of hip/abduction joints
+
+      # -- standup FSM. sim holds stand_jpos before the policy connects; the
+      #    app's standup ramps to it with the gains below. length N. --
+      transform_up:
+        stand_jpos: [0.0, 0.8, -1.6, 0.0, -0.0, 0.8, -1.6, 0.0, 0.0, 1.0, -1.6, 0.0, -0.0, 1.0, -1.6, 0.0]  # <FILL> resting stand pose (d1 is asymmetric: front thigh 0.8, rear 1.0 — don't guess symmetric)
+        fold_jpos:  [0.0, 1.0, -2.4, 0.0, -0.0, 1.0, -2.4, 0.0, 0.0, 1.6, -2.4, 0.0, -0.0, 1.6, -2.4, 0.0]  # <FILL> crouched pose standup starts from
+        fold_timer: 2.0
+        stand_timer: 2.0
+        ff_torque: [0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0, 0.0]  # <FILL> feed-forward torque during stand (0 if unused)
+        joint_kp:  [400.0, 150.0, 300.0, 5.0, 400.0, 150.0, 300.0, 5.0, 400.0, 150.0, 300.0, 5.0, 400.0, 150.0, 300.0, 5.0]  # <FILL> stiff standup gains
+        joint_kd:  [8.0, 8.0, 8.0, 0.5, 8.0, 8.0, 8.0, 0.5, 8.0, 8.0, 8.0, 0.5, 8.0, 8.0, 8.0, 0.5]
+
+      # transform_down / joint_pd are optional FSM states; copy from config/d1
+      # if you use them (folding down / a raw PD hold mode).
+
+      # -- one entry per policy this robot ships; one matching block below --
+      rl_policy_names:
+        - "rl_flat_lab"               # <FILL> your policy name(s)
+
+      # ---- per-policy block: duplicate per name in rl_policy_names ----
+      rl_flat_lab:
+        policy_path: config/robot/flat_lab.onnx   # <FILL> path to the exported ONNX (relative to repo root)
+        output_name: "nn_output"                  # ONNX output tensor name
+        control_type: "P_V"                       # P_V = legs position + wheels velocity; "P" = pure position
+
+        # -- [TRAIN] structure — the app dim-checks these against the ONNX --
+        num_obs: 57                               # <FILL> [TRAIN] per-frame observation dim
+        num_actions: 16                           # <FILL> [TRAIN] = N
+        history_len: 10                           # <FILL> [TRAIN] observation history length
+        observations_name: ["ang_vel", "gravity", "commands", "dof_pos", "dof_vel", "last_actions"]  # <FILL> [TRAIN] order must match training
+
+        # -- command interface (teleop / set_command feeds these) --
+        commands_name: ["lin_vel_x", "lin_vel_y", "ang_vel_z"]
+        max_commands: [1.0, 1.0, 1.0]             # <FILL> command clamp (upper)
+        min_commands: [-1.0, -1.0, -1.0]          # <FILL> command clamp (lower)
+
+        # -- control + scaling. [TRAIN] scales MUST equal training exactly --
+        default_joint_angles: [0.0, 0.8, -1.5, 0.0, -0.0, 0.8, -1.5, 0.0, 0.0, 0.8, -1.5, 0.0, -0.0, 0.8, -1.5, 0.0]  # <FILL> [TRAIN] policy neutral pose, len N
+        joint_kp: [60.0, 60.0, 60.0, 0.0, 60.0, 60.0, 60.0, 0.0, 60.0, 60.0, 60.0, 0.0, 60.0, 60.0, 60.0, 0.0]        # <FILL> [TRAIN] deploy PD kp (wheels 0 for P_V)
+        joint_kd: [1.5, 1.5, 1.5, 0.5, 1.5, 1.5, 1.5, 0.5, 1.5, 1.5, 1.5, 0.5, 1.5, 1.5, 1.5, 0.5]                    # <FILL> [TRAIN] deploy PD kd
+        action_scales: [0.25, 0.25, 0.25, 5.0, 0.25, 0.25, 0.25, 5.0, 0.25, 0.25, 0.25, 5.0, 0.25, 0.25, 0.25, 5.0]  # <FILL> [TRAIN] per-action scale, len N
+        lin_vel_scale: 2.0                        # <FILL> [TRAIN] obs scales — copy from the training export
+        ang_vel_scale: 0.25                       # <FILL> [TRAIN]
+        dof_pos_scale: 1.0                        # <FILL> [TRAIN]
+        dof_vel_scale: 0.05                       # <FILL> [TRAIN]

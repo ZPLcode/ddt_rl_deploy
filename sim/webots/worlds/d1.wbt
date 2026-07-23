@@ -1,0 +1,50 @@
+#VRML_SIM R2025a utf8
+# Self-contained d1 world: raw ground plane (no Webots object PROTO deps) + the
+# URDF-converted D1 robot as an <extern> controller.  The controller
+# (sim/webots/webots_sim.py) speaks the sim/BACKEND.md DDS contract.
+EXTERNPROTO "../protos/D1.proto"
+
+WorldInfo {
+  basicTimeStep 4
+  contactProperties [
+    ContactProperties {
+      material1 "default"
+      material2 "default"
+      coulombFriction [ 1.0 ]
+    }
+  ]
+}
+Viewpoint {
+  orientation -0.35 0.30 0.88 1.9
+  position 1.8 1.6 1.2
+}
+Background {
+  skyColor [ 0.42 0.47 0.52 ]
+}
+DirectionalLight {
+  direction 0.4 -0.5 -1
+  intensity 3.5
+  castShadows TRUE
+}
+Solid {
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.5 0.5 0.5
+        roughness 1
+        metalness 0
+      }
+      geometry Plane {
+        size 50 50
+      }
+    }
+  ]
+  name "floor"
+  boundingObject Plane {
+    size 50 50
+  }
+}
+D1 {
+  translation 0 0 0.40
+  controller "<extern>"
+}

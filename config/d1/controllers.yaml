@@ -1,4 +1,7 @@
-# This config file is used by ros2_control
+# d1 deploy config, shared by sim and app (vendor ros2_control yaml format).
+#   sim/simbase.py reads: joints, transform_up.stand_jpos, wheel_indices
+#   deploy/rl_inference.py reads: FSM gains + the per-policy blocks
+# Field reference: config/_template/controllers.yaml
 /**:
   controller_manager:
     ros__parameters:
