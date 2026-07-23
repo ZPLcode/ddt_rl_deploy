@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-# Transport shell for the RL deploy stack: subscribes to joint_states / IMU /
-# cmd_twist / cmd_pose, snapshots them into a plain RobotState/Command, and hands
-# them to the transport-free PolicyEngine (policy_engine.py) which does all the
-# observation assembly + ONNX inference + decode.  This node knows only ROS 2;
-# the engine knows only the math — the same split DeepRobotics uses between
-# main.cpp and lite3_policy_runner.hpp, and the seam a future non-rclpy
-# transport (ddt_sdk / cyclonedds) plugs into.
+# Transport shell: subscribes joint_states / imu / cmd_twist / cmd_pose,
+# snapshots them into RobotState/Command and hands them to PolicyEngine
+# (policy_engine.py), which does obs assembly + onnx + decode. This node
+# knows only ROS 2; the engine knows only the math.
 
 import math
 import os
@@ -49,14 +46,13 @@ class RLInferenceNode(Node):
         self._create_subscriptions()
         self._joint_cmd_pub = self.create_publisher(
             JointControlCommand, self._tp('command/joint_command'), 10)
-        # Two wall-clock timers (DeepRobotics / LeggedLab / rl_sar pattern):
-        # inference at control_dt (the trained policy rate) + publish/decode at
-        # 200 Hz so the wheel P-mode -kd*velocity damping tracks live velocity.
-        # Both read the callback-filled state cache; no message-stamp gate, so
-        # this assumes the state source runs at real time (the sim paces itself
-        # to wall-clock; a real robot always does).
+        # two wall-clock timers: infer at control_dt (trained rate), publish at
+        # 200 Hz so wheel damping sees live velocity. no stamp gate -> state
+        # source must run at real time (sim self-paces; real robot always does).
         self._infer_timer = self.create_timer(self._control_dt, self._infer_cb)
         self._publish_timer = self.create_timer(0.005, self._publish_cb)
+        # one-shot startup check: warn if no state source instead of idling
+        self._nostate_timer = self.create_timer(3.0, self._nostate_check)
         self.get_logger().info(
             f'RLInferenceNode ready | policy={self._policy_type}'
             f' num_actions={self._num_actions} history_len={self._history_len}'
@@ -94,6 +90,8 @@ class RLInferenceNode(Node):
         self.declare_parameter('joint_kd', [0.0])
         self.declare_parameter('control_type', 'P')    # P or P_V
         self.declare_parameter('episode_length', 0.0)
+        # debug only: disables posture guard + staleness watchdog. never on real.
+        self.declare_parameter('debug_disable_guards', False)
 
     def _load_yaml_section(self, config_file: str, policy_name: str):
         """Return (section_dict, full_yaml_dict)."""
@@ -138,19 +136,26 @@ class RLInferenceNode(Node):
                 cfg, full_yaml = self._load_yaml_section(config_file, policy_name)
                 self.get_logger().info(f'Loaded config: {config_file} [{policy_name}]')
             except Exception as e:
+                # fail fast with the valid names, don't idle on ROS defaults
                 self.get_logger().error(f'Failed to load config: {e}')
+                try:
+                    with open(config_file) as f:
+                        names = self._find_key_recursive(
+                            yaml.safe_load(f), 'rl_policy_names') or []
+                except Exception:
+                    names = []
+                if names:
+                    self.get_logger().error('可用策略: ' + ', '.join(names))
+                raise SystemExit(1)
 
         def y(yaml_key, ros_param):
             """YAML value takes precedence over the ROS2 param default."""
             return cfg[yaml_key] if yaml_key in cfg else g(ros_param).value
 
-        # policy_path: resolve relative paths against the package share directory,
-        # matching the C++ ament_index_cpp::get_package_share_directory() behaviour.
+        # policy_path: prefer an onnx next to the config file (self-contained);
+        # fall back to the rl_controller share dir for the legacy in-tree layout
         policy_path = str(cfg.get('policy_path', ''))
         if policy_path and not os.path.isabs(policy_path):
-            # Prefer an onnx sitting next to the config file (keeps a standalone
-            # deploy repo self-contained); fall back to the rl_controller package
-            # share dir for the legacy in-tree layout.
             cfg_dir = os.path.dirname(os.path.abspath(config_file)) if config_file else ''
             local = os.path.join(cfg_dir, os.path.basename(policy_path)) if cfg_dir else ''
             if local and os.path.isfile(local):
@@ -224,19 +229,18 @@ class RLInferenceNode(Node):
 
         self._control_type = str(y('control_type', 'control_type'))
 
-        self._decimation = int(cfg.get('decimation', 4))
-        # Inference is time-gated at the training control period, NOT frame-gated
-        # on the joint_states count.  Frame-gating tied the policy rate to the
-        # joint_states arrival rate (250 Hz / decimation 4 = 62.5 Hz), drifting off
-        # the 50 Hz the policy was trained at (train decimation 4 x sim.dt 0.005 =
-        # 0.02 s).  control_dt keeps the rate at the trained value regardless.
+        # time-gated at the trained control period, not frame-gated on
+        # joint_states count (frame-gating drifts with the publish rate)
         self._control_dt = float(cfg.get('control_dt', 0.02))
-
-        self._output_torque_scale = float(cfg.get('output_torque_scale', 1.0))
         self._episode_length = float(y('episode_length', 'episode_length'))
 
-        # transform_up params (mirrors FSMState_TransformUp): fold-then-stand
-        # linear ramps with dedicated gains + feed-forward, wheels damped only.
+        self._no_guards = bool(g('debug_disable_guards').value)
+        if self._no_guards:
+            self.get_logger().warning(
+                '!! debug_disable_guards=true —— 姿态守卫 + 断流看门狗已关闭,'
+                '仅供可视化观察,切勿用于真机 !!')
+
+        # transform_up params (FSMState_TransformUp): fold-then-stand ramps
         tu = self._find_key_recursive(full_yaml, 'transform_up')
         tu = tu if isinstance(tu, dict) else {}
         n = len(self._joint_names)
@@ -250,7 +254,7 @@ class RLInferenceNode(Node):
         self._tu_ok = n > 0 and all(
             len(a) == n for a in (self._tu_fold_jpos, self._tu_stand_jpos,
                                   self._tu_ff, self._tu_kp, self._tu_kd))
-        # C++ gates the rl handoff 100 update cycles after the ramps finish.
+        # C++ hands off to rl 100 update cycles after the ramps finish
         update_rate = self._find_key_recursive(full_yaml, 'update_rate')
         self._tu_settle = 100.0 / float(update_rate) if update_rate else 0.25
         if not self._tu_ok:
@@ -298,11 +302,10 @@ class RLInferenceNode(Node):
         self._twist_angular = np.zeros(3, dtype=np.float32)
         self._pose_rpy      = np.zeros(3, dtype=np.float32)
         self._state_stamp: float | None = None   # stamp of latest cached joint_states
+        self._state_walltime: float | None = None  # wall-clock receipt time (watchdog)
         self._inferred_once = False               # gate publishing until first inference
         self._iter = 0
-        # Mode sequence: standup -> rl -> (fault/exit) damping.  A plain string
-        # instead of FSM state classes — same behaviour as transform_up/passive,
-        # a fraction of the machinery.
+        # mode: standup -> rl -> damping (fault/exit). plain string, no FSM classes.
         self._mode = 'standup' if self._tu_ok else 'rl'
         self._su_phase = None       # None -> 'fold' -> 'stand'
         self._su_q0 = None          # measured pose at standup entry
@@ -336,6 +339,7 @@ class RLInferenceNode(Node):
             self._joint_pos[name] = float(pos)
             self._joint_vel[name] = float(vel)
         self._state_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        self._state_walltime = time.monotonic()   # feeds the staleness watchdog
 
     def _twist_cb(self, msg: Twist):
         self._twist_linear  = np.array([msg.linear.x,  msg.linear.y,  msg.linear.z],  dtype=np.float32)
@@ -351,9 +355,7 @@ class RLInferenceNode(Node):
     # ----------------------------------------------------------------------- #
 
     def _snapshot(self):
-        """Take a plain RobotState/Command snapshot of the current caches.
-        Single-threaded executor: callbacks never interleave with the timers,
-        so no lock is needed."""
+        """Snapshot the caches. Single-threaded executor -> no lock needed."""
         state = RobotState(
             stamp=self._state_stamp,
             gyro=self._gyro,
@@ -368,16 +370,23 @@ class RLInferenceNode(Node):
         )
         return state, cmd
 
+    def _nostate_check(self):
+        self._nostate_timer.cancel()      # one-shot
+        if self._state_stamp is None:
+            self.get_logger().warning(
+                '启动 3s 仍未收到 joint_states —— 仿真/机器人在线吗?'
+                '先启动 ./scripts/run_sim.sh(sim2sim),'
+                '或检查 ROS_LOCALHOST_ONLY / ROS_DOMAIN_ID / ROBOT_NS')
+
     def _infer_cb(self):
-        # Fires at control_dt (the trained policy rate).  Runs one inference,
-        # updating the engine's cached action.  Only active in rl mode.
+        # fires at control_dt; one inference per call, rl mode only
         if self._mode != 'rl' or self._state_stamp is None:
             return
-        # Posture guard (Lite3 PostureUnsafeCheck thresholds: roll 30deg,
-        # pitch 45deg) -> switch to damping and stay there.
+        # posture guard (Lite3 thresholds: roll 30deg pitch 45deg) -> damping
         w, x, y, z = self._quat_wxyz
         roll, pitch, _ = euler_from_quat(w, x, y, z)
-        if abs(roll) > math.radians(30.0) or abs(pitch) > math.radians(45.0):
+        if not self._no_guards and \
+                (abs(roll) > math.radians(30.0) or abs(pitch) > math.radians(45.0)):
             self._mode = 'damping'
             self.get_logger().error(
                 f'posture unsafe (roll={math.degrees(roll):.1f} '
@@ -394,15 +403,22 @@ class RLInferenceNode(Node):
         self._iter += 1
 
     def _publish_cb(self):
-        # Fires at 200 Hz.  Publishes according to the current mode.
+        # fires at 200 Hz, publishes per current mode
         if self._state_stamp is None:
             return
+        # staleness watchdog: state source died (sim killed / link dropped) but
+        # wall-clock timers keep firing -> damping, stay there
+        if not self._no_guards and self._mode != 'damping' and \
+                self._state_walltime is not None and \
+                (time.monotonic() - self._state_walltime) > 0.2:
+            self._mode = 'damping'
+            self.get_logger().error(
+                'joint_states 断流 >0.2s -> damping(需重启本节点恢复)')
         if self._mode == 'standup':
             self._publish(self._standup_command())
         elif self._mode == 'rl':
-            # Decode the latest action with the live state (so the wheel P-mode
-            # damping tracks live velocity).  Waits for the first inference so
-            # we never publish the zero-action default.
+            # decode with live state; wait for first inference so we never
+            # publish the zero-action default
             if not self._inferred_once:
                 return
             state, _ = self._snapshot()
@@ -415,17 +431,17 @@ class RLInferenceNode(Node):
     # ----------------------------------------------------------------------- #
 
     def _standup_command(self):
-        # Two linear ramps on the wall clock, exactly FSMState_TransformUp:
+        # two wall-clock ramps, exactly FSMState_TransformUp:
         #   fold:  measured q0 -> fold_jpos, duration fold_timer * max|q0-fold|
         #   stand: fold_jpos -> stand_jpos, duration stand_timer (+settle)
-        # Wheels: position 0 / kp 0 / kd damped, never interpolated.
+        # wheels: kp 0 / kd damped, never interpolated
         now = time.monotonic()
         if self._su_phase is None:
             self._su_q0 = np.array(
                 [self._joint_pos.get(j, 0.0) for j in self._joint_names],
                 dtype=np.float32)
             self._su_fold_target = self._tu_fold_jpos.copy()
-            for j in self._wheel_joints:          # wheels don't fold (C++ enter())
+            for j in self._wheel_joints:          # wheels don't fold
                 i = self._joint_names.index(j)
                 self._su_fold_target[i] = self._su_q0[i]
             err = float(np.max(np.abs(self._su_q0 - self._su_fold_target)))
@@ -468,7 +484,7 @@ class RLInferenceNode(Node):
         return jc
 
     def _damping_command(self):
-        # Mirror FSMState_Passive: everything zero, legs kd=5, wheels kd=0.
+        # FSMState_Passive: everything zero, legs kd=5, wheels kd=0
         jc = JointCommand()
         for jname in self._joint_names:
             jc.name.append(jname)
@@ -480,9 +496,8 @@ class RLInferenceNode(Node):
         return jc
 
     def send_damping_burst(self, n=20, period=0.02):
-        # Called on shutdown from main(): the downstream bridge keeps executing
-        # the LAST command forever (official SDK docs), so exiting after a high-
-        # kp command would leave the robot rigid.  Overwrite it with damping.
+        # on shutdown: downstream keeps executing the last command forever, so
+        # never exit with a high-kp command latched — overwrite with damping
         for _ in range(n):
             self._publish(self._damping_command())
             time.sleep(period)
@@ -504,8 +519,7 @@ class RLInferenceNode(Node):
 def main():
     rclpy.init()
     node = RLInferenceNode()
-    # SIGTERM (kill, systemd stop) should exit through the same damping path
-    # as Ctrl-C, not die with the last high-kp command latched downstream.
+    # SIGTERM exits through the same damping path as Ctrl-C
     def _sigterm(*_):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _sigterm)

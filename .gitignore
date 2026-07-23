@@ -16,3 +16,7 @@ MUJOCO_LOG.TXT
 .idea/
 
 # NOTE: *.onnx policies ARE tracked on purpose (repo is self-contained).
+*.pyc
+
+# Webots GUI project state
+*.wbproj

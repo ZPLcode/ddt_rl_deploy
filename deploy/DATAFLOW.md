@@ -14,6 +14,7 @@ joint_states 到 ─► 回调缓存 ─► 双墙钟定时器 ─► 推理/解
 
 ```
 standup ──完成──► rl ──姿态超限(roll>30°/pitch>45°)──► damping(锁死)
+   任何模式 ──joint_states 断流>0.2s──► damping(锁死)
    任何时刻退出(Ctrl-C/SIGTERM) ──► main finally: 阻尼连发20条 ──► 退出
 ```
 

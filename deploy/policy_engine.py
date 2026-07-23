@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """
-Transport-free RL policy engine — the "brain" of the deploy stack.
+Transport-free RL policy engine (the "brain").
 
-This module knows nothing about ROS 2, DDS, publishers or the wall clock.  It
-takes a plain RobotState + Command in and returns a plain JointCommand out, so
-the exact same code runs in sim, on the real robot, inside a unit test (feed
-numpy arrays, assert on the output) and in a future non-rclpy transport.  This
-mirrors the DeepRobotics PolicyRunner split (lite3_policy_runner.hpp's pure
-getRobotAction(state, cmd) vs main.cpp's transport shell).
-
-The math (observation assembly, the three input layouts, decode) is moved
-verbatim from rl_inference.py; only the state source changes from `self._x`
-(populated by ROS callbacks) to `state.x` / `cmd.x` passed in as arguments.
+No ROS/DDS here: RobotState + Command in, JointCommand out. Same split as
+DeepRobotics lite3_policy_runner.hpp vs main.cpp. Math mirrors the vendor
+C++ FSMState_RL* and was ported verbatim from the original monolithic node
+(kept as reference at deploy/rl_inference_origin.py).
 """
 
 import math
@@ -53,7 +47,7 @@ def euler_from_quat(w: float, x: float, y: float, z: float):
 @dataclass
 class RobotState:
     """A single measured snapshot; the transport shell fills it each tick."""
-    stamp: float                       # message time (physics time), seconds
+    stamp: float                       # source msg time, s (debug only)
     gyro: np.ndarray                   # (3,) body angular velocity
     quat_wxyz: np.ndarray              # (4,) orientation w,x,y,z
     joint_pos: dict                    # joint name -> position (rad)
@@ -111,12 +105,9 @@ class PolicyConfig:
 #  Observation registry
 # --------------------------------------------------------------------------- #
 #
-# name -> (dim_rule, compute_method_name).  dim_rule is an int, or a
-# callable(cfg)->int for dims that depend on the robot/policy config.
-# Co-locating the dimension and the computation here means the two can never
-# drift, and adding an observation is a single entry + its _obs_<name> method —
-# no edits to _obs_dim or the _update_observations dispatch loop.  Config still
-# owns which observations run, their order and their scales (cfg.obs_names).
+# name -> (dim, compute method). dim is an int or callable(cfg)->int.
+# dim and compute live together so they can't drift; adding an obs = one entry
+# + one _obs_<name> method. config picks which obs run and their order.
 
 _OBS_SPECS = {
     'ang_vel':          (3,                                                   '_obs_ang_vel'),
@@ -137,9 +128,9 @@ _OBS_SPECS = {
 # --------------------------------------------------------------------------- #
 
 class PolicyEngine:
-    """Stateful across ticks (obs history, last action, integrated height) but
-    with zero transport knowledge.  step() gates inference to the trained
-    control period on the incoming stamp and always decodes with live state."""
+    """Stateful (obs history, last action, integrated height), no transport,
+    no internal clock: caller drives infer() at control_dt and decode() on
+    each publish."""
 
     def __init__(self, cfg: PolicyConfig, logger=None):
         self.cfg = cfg
@@ -152,9 +143,36 @@ class PolicyEngine:
             self._session = ort.InferenceSession(cfg.onnx_path)
             self._input_names = [i.name for i in self._session.get_inputs()]
             self._info(f'Loaded model: {cfg.onnx_path} | inputs={self._input_names}')
+            self._check_model_dims()
         else:
             self._warn('onnx_path not set — inference disabled')
         self._init_memory()
+
+    def _check_model_dims(self):
+        """Fail at load time when config and onnx shapes disagree (e.g. 57-obs
+        config with a 58-obs model) instead of a cryptic runtime error."""
+        cfg = self.cfg
+        obs_dim = sum(self._obs_dim(n) for n in cfg.obs_names)
+        ins = self._session.get_inputs()
+
+        def ints(shape):     # symbolic dims (str/None) are skipped
+            return [d for d in shape if isinstance(d, int)]
+
+        if cfg.policy_type == 'np3o':
+            expected = [[1, obs_dim], [1, cfg.history_len, obs_dim]]
+        elif cfg.policy_type == 'ppo':
+            expected = [[1, (cfg.history_len + 1) * obs_dim]]
+        else:               # asap layouts vary (obs subset) — skip strict check
+            return
+        for inp, exp in zip(ins, expected):
+            got = ints(inp.shape)
+            if got and got != exp:
+                raise ValueError(
+                    f'model/config mismatch: model input "{inp.name}" is {got} '
+                    f'but the config implies {exp} '
+                    f'(observations_name sums to {obs_dim} dims, '
+                    f'history_len={cfg.history_len}, policy_type={cfg.policy_type}). '
+                    f'Check that policy_name and the onnx file are a matching pair.')
 
     # ------------------------------------------------------------------ #
 
@@ -200,47 +218,39 @@ class PolicyEngine:
 
     def _update_observations(self, state: RobotState, cmd: Command):
         cfg = self.cfg
-        # 1. Shift history — save current (old) obs into history ring
+        # shift history (row 0 oldest, row -1 newest)
         if cfg.history_len == 1:
             for n in cfg.obs_names:
                 self._obs_hist[n][0] = self._obs[n]
         else:
             for n in cfg.obs_names:
-                self._obs_hist[n][:-1] = self._obs_hist[n][1:]   # shift towards row 0
-                self._obs_hist[n][-1]  = self._obs[n]            # newest at tail
+                self._obs_hist[n][:-1] = self._obs_hist[n][1:]
+                self._obs_hist[n][-1]  = self._obs[n]
 
-        # 2. Recompute each observation via its registered function.
-        #    self._obs[n] still holds the PREVIOUS value when its function runs
-        #    (the ang_vel low-pass relies on this), so we read-then-assign per name.
+        # recompute each obs; self._obs[n] still holds the previous value while
+        # its function runs (the ang_vel low-pass relies on this)
         for n in cfg.obs_names:
             self._obs[n] = getattr(self, _OBS_SPECS[n][1])(state, cmd)
 
-        # 3. First frame: pre-fill the whole history ring with the current obs.
-        #    Mirrors Isaac Lab's CircularBuffer.append, which fills every history
-        #    layer with the observation on the first push after an episode reset
-        #    (circular_buffer.py: `self._buffer[:, is_first_push] = data`).
-        #    Without this the policy would see a zero-history cold start for the
-        #    first history_len ticks — a distribution it never saw in training.
+        # first frame: fill the whole history with the current obs, like Isaac
+        # Lab's CircularBuffer on first push after reset (zero history is OOD)
         if self._first_frame:
             for n in cfg.obs_names:
                 self._obs_hist[n][:] = self._obs[n]
             self._first_frame = False
 
     # -- per-observation compute functions (registered in _OBS_SPECS) -------- #
-    #    each returns the new value for that observation; dimension is declared
-    #    alongside the method name in _OBS_SPECS so the two cannot drift.
 
     def _obs_ang_vel(self, state, cmd):
-        # 0.03/0.97 low-pass filter matching C++ implementation
+        # low-pass 0.97*new + 0.03*old, matches C++ (its comment has the
+        # weights backwards; code is authoritative). deploy-only filter.
         raw = state.gyro * self.cfg.ang_vel_scale
         return 0.03 * self._obs['ang_vel'] + 0.97 * raw
 
     def _obs_gravity(self, state, cmd):
         w, x, y, z = state.quat_wxyz
         R = quat_to_rotation_matrix(w, x, y, z)
-        # C++ quaternionToRotationMatrix() transposes the matrix (R_w2b), then
-        # multiplies by [0,0,-1], giving gravity in body frame.  Our
-        # quat_to_rotation_matrix returns R_b2w, so we must transpose.
+        # C++ uses R_w2b * [0,0,-1]; our R is body->world so transpose
         return R.T @ np.array([0.0, 0.0, -1.0], dtype=np.float32)
 
     def _obs_commands(self, state, cmd):
@@ -254,7 +264,7 @@ class PolicyEngine:
             elif cname == 'ang_vel_z':
                 raw = cfg.cmd_gain[i] * cmd.twist_angular[2]
             elif cname == 'base_height':
-                # integrate z velocity command over time (mirrors C++ integrate_height)
+                # integrate twist z over time (C++ integrate_height)
                 self._current_height = float(np.clip(
                     self._current_height + cmd.twist_linear[2] * self._infer_dt,
                     cfg.cmd_min[i], cfg.cmd_max[i]))
@@ -317,6 +327,7 @@ class PolicyEngine:
         return np.array([phase_val], dtype=np.float32)
 
     def _obs_action_rescale(self, state, cmd):
+        # fixed constant fed as obs by asap policies (C++ hard-codes it too)
         return np.array([0.25], dtype=np.float32)
 
     # ------------------------------------------------------------------ #
@@ -414,13 +425,15 @@ class PolicyEngine:
 
             if jname in cfg.wheel_joints:
                 if cfg.control_type == 'P':
+                    # P: wheel torque computed here from live velocity, sent as
+                    # pure effort (why decode() runs on the fast publish timer)
                     out.position.append(0.0)
                     out.velocity.append(0.0)
                     out.effort.append((action * scale + default) * kp
                                       - kd * state.joint_vel.get(jname, 0.0))
                     out.kp.append(0.0)
                     out.kd.append(0.0)
-                else:  # P_V
+                else:  # P_V: velocity target, downstream PD does kd*(v*-v)
                     out.position.append(0.0)
                     out.velocity.append(action * scale)
                     out.effort.append(0.0)
@@ -439,16 +452,10 @@ class PolicyEngine:
     # ------------------------------------------------------------------ #
 
     def infer(self, state: RobotState, cmd: Command):
-        """Run one policy inference: assemble observations, run ONNX, update the
-        cached action (_last_actions).  The CALLER decides cadence — a fixed-rate
-        wall-clock timer at control_dt — matching the DeepRobotics / LeggedLab /
-        rl_sar pattern where the control loop runs at the policy rate and the
-        runner just executes one step per call.  There is no message-stamp gate,
-        so this is correct only when the state source runs at real time (the
-        reference simulators pace themselves to wall-clock; a real robot always
-        does).  decode() is called separately, typically from a faster publish
-        timer, so the wheel P-mode -kd*velocity term tracks the live velocity."""
-        self._infer_dt = self.cfg.control_dt          # nominal fixed period
+        """One inference step: assemble obs, run onnx, update _last_actions.
+        Caller owns the cadence (wall-clock timer at control_dt). No stamp
+        gate, so the state source must run at real time."""
+        self._infer_dt = self.cfg.control_dt
         self._update_observations(state, cmd)
         self._run_inference()
         self._current_time += self.cfg.control_dt     # policy phase clock
