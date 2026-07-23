@@ -1,0 +1,61 @@
+<mujoco model="ddt cargo out scene">
+  <include file="robot.xml"/>
+
+  <statistic center="0 0 0.1" extent="0.8"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="rough" rgba="0.42 0.40 0.36 1"/>
+    <hfield name="rugged" file="rugged.png" size="2.5 2 0.12 0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- 5 parallel staircases along Y, each a UNIFORM rise (10/13/16/19/22 cm), 0.30 m tread, 4 steps + landing.
+         robot spawns at y=0 -> faces the 16 cm lane. drag/strafe to a neighbour lane to test another height. -->
+    <!-- lane y=+5.0: uniform 10 cm rise -->
+    <geom pos="1.65 5.0 0.05" type="box" size="0.15 0.8 0.05"/>   <!-- step1 top 0.10 -->
+    <geom pos="1.95 5.0 0.1" type="box" size="0.15 0.8 0.1"/>   <!-- step2 top 0.20 -->
+    <geom pos="2.25 5.0 0.15" type="box" size="0.15 0.8 0.15"/>   <!-- step3 top 0.30 -->
+    <geom pos="2.55 5.0 0.2" type="box" size="0.15 0.8 0.2"/>   <!-- step4 top 0.40 -->
+    <geom pos="3.3 5.0 0.2" type="box" size="0.6 0.8 0.2"/>   <!-- landing top 0.40 -->
+    <!-- lane y=+2.5: uniform 13 cm rise -->
+    <geom pos="1.65 2.5 0.065" type="box" size="0.15 0.8 0.065"/>   <!-- step1 top 0.13 -->
+    <geom pos="1.95 2.5 0.13" type="box" size="0.15 0.8 0.13"/>   <!-- step2 top 0.26 -->
+    <geom pos="2.25 2.5 0.195" type="box" size="0.15 0.8 0.195"/>   <!-- step3 top 0.39 -->
+    <geom pos="2.55 2.5 0.26" type="box" size="0.15 0.8 0.26"/>   <!-- step4 top 0.52 -->
+    <geom pos="3.3 2.5 0.26" type="box" size="0.6 0.8 0.26"/>   <!-- landing top 0.52 -->
+    <!-- lane y=+0.0: uniform 16 cm rise -->
+    <geom pos="1.65 0.0 0.08" type="box" size="0.15 0.8 0.08"/>   <!-- step1 top 0.16 -->
+    <geom pos="1.95 0.0 0.16" type="box" size="0.15 0.8 0.16"/>   <!-- step2 top 0.32 -->
+    <geom pos="2.25 0.0 0.24" type="box" size="0.15 0.8 0.24"/>   <!-- step3 top 0.48 -->
+    <geom pos="2.55 0.0 0.32" type="box" size="0.15 0.8 0.32"/>   <!-- step4 top 0.64 -->
+    <geom pos="3.3 0.0 0.32" type="box" size="0.6 0.8 0.32"/>   <!-- landing top 0.64 -->
+    <!-- lane y=-2.5: uniform 19 cm rise -->
+    <geom pos="1.65 -2.5 0.095" type="box" size="0.15 0.8 0.095"/>   <!-- step1 top 0.19 -->
+    <geom pos="1.95 -2.5 0.19" type="box" size="0.15 0.8 0.19"/>   <!-- step2 top 0.38 -->
+    <geom pos="2.25 -2.5 0.285" type="box" size="0.15 0.8 0.285"/>   <!-- step3 top 0.57 -->
+    <geom pos="2.55 -2.5 0.38" type="box" size="0.15 0.8 0.38"/>   <!-- step4 top 0.76 -->
+    <geom pos="3.3 -2.5 0.38" type="box" size="0.6 0.8 0.38"/>   <!-- landing top 0.76 -->
+    <!-- lane y=-5.0: uniform 22 cm rise -->
+    <geom pos="1.65 -5.0 0.11" type="box" size="0.15 0.8 0.11"/>   <!-- step1 top 0.22 -->
+    <geom pos="1.95 -5.0 0.22" type="box" size="0.15 0.8 0.22"/>   <!-- step2 top 0.44 -->
+    <geom pos="2.25 -5.0 0.33" type="box" size="0.15 0.8 0.33"/>   <!-- step3 top 0.66 -->
+    <geom pos="2.55 -5.0 0.44" type="box" size="0.15 0.8 0.44"/>   <!-- step4 top 0.88 -->
+    <geom pos="3.3 -5.0 0.44" type="box" size="0.6 0.8 0.44"/>   <!-- landing top 0.88 -->
+
+    <!-- rugged height-field patch -->
+    <geom type="hfield" hfield="rugged" pos="8.0 0 0" material="rough"/>
+  </worldbody>
+</mujoco>
