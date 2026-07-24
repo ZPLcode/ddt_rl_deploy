@@ -2,7 +2,7 @@
 """
 MuJoCo sim2sim backend — no ros2_control.
 
-Speaks the sim/BACKEND.md contract so rl_inference.py runs unmodified:
+Speaks the deploy topic contract so rl_inference.py runs unmodified:
     sub  command/joint_command       (ddt_msgs/JointControlCommand)
     pub  joint_states                (sensor_msgs/JointState)
     pub  imu_sensor_broadcaster/imu  (sensor_msgs/Imu)
@@ -34,7 +34,7 @@ def _scene_for(robot):
         os.path.dirname(os.path.abspath(__file__)),
         '..', 'models', f'{robot}_description', 'mujoco', 'scene.xml')
 
-INIT_BASE_HEIGHT = 0.35   # free-joint spawn height; allow it to settle onto the wheels
+INIT_BASE_HEIGHT = 0.35   # free-joint spawn height; the robot settles onto the ground
 
 
 class MujocoSimLite(SimBackend):
@@ -138,13 +138,14 @@ def main():
                 w, x, y, z = node.sens_quat.data
                 roll = np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
                 pitch = np.arcsin(np.clip(2 * (w * y - z * x), -1.0, 1.0))
+                j1 = node.joint_names[1]
                 q1 = node.data.qpos[node.qpos_adr[1]]
                 node.get_logger().info(
                     f'z={node.data.qpos[2]:.3f}'
                     f' roll={np.degrees(roll):+.1f}deg'
                     f' pitch={np.degrees(pitch):+.1f}deg'
                     f' cmd={"Y" if node.have_cmd else "N"}'
-                    f' FL_thigh cmd={node.pos_cmd[1]:+.2f} q={q1:+.2f}'
+                    f' {j1} cmd={node.pos_cmd[1]:+.2f} q={q1:+.2f}'
                     f' kp={node.kp[1]:.0f}')
 
             # Wall-clock pacing with drift correction (reference: pybullet

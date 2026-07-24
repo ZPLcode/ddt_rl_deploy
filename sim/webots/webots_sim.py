@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Webots <extern> controller — sim2sim backend, no webots_ros2/ros2_control.
 
-Connects to a running Webots and speaks the sim/BACKEND.md contract, same
+Connects to a running Webots and speaks the deploy topic contract, same
 topics as mujoco_sim.py. Shared logic is in sim/simbase.py; this file is the
 Webots binding only. Torque via Motor.setTorque(); Webots runs in real-time
 mode so physics advances at wall-clock.

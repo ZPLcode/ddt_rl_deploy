@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Webots sim2sim backend entrypoint (auto-discovered by run_sim.sh --backend webots).
-# Starts Webots + the extern controller (webots_sim.py, per the BACKEND.md contract).
+# Starts Webots + the extern controller (webots_sim.py, per the topic contract).
 #   headless by default (--no-rendering --minimize --batch);
 #   add --gui for a visible Webots window (visual debugging):
 #     ./scripts/run_sim.sh --backend webots --gui
@@ -35,7 +35,7 @@ done
 WORLD="$HERE/worlds/$ROBOT.wbt"
 [ -f "$WORLD" ] || {
     echo "error: missing $WORLD -- this robot has no Webots world/proto yet." >&2
-    echo "  Base one on worlds/d1.wbt + protos/D1.proto (see docs/ADD_ROBOT.md)." >&2
+    echo "  Base one on worlds/d1.wbt + protos/D1.proto." >&2
     exit 1; }
 LOG="${TMPDIR:-/tmp}/webots_ddt.$$.log"
 

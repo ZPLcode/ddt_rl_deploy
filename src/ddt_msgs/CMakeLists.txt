@@ -11,23 +11,11 @@ find_package(rosidl_default_generators REQUIRED)
 
 set(MSG_FILES
         "msg/JointControlCommand.msg"
-        "msg/DockStatus.msg"
-        "msg/UserCommand.msg"
-        "msg/CentroidState.msg"
-        "msg/RigidBody.msg"
-        "msg/CrsfTransferData.msg"
-        "msg/DockTransferMessage.msg"
-        "msg/PMSCommand.msg"
-)
-
-set(SRV_FILES
-        "srv/SendDockTransfer.srv"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
         ${MSG_FILES}
-        ${SRV_FILES}
-        DEPENDENCIES std_msgs unique_identifier_msgs geometry_msgs
+        DEPENDENCIES std_msgs
 )
 ament_export_dependencies(rosidl_default_runtime)
 

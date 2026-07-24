@@ -7,13 +7,7 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 
 ## 机型支持
 
-`d1` 是交付件,其余为实验性或仅有模型。
-
-| 机型 | 策略 | sim2sim | sim2real | 状态 |
-|---|---|:-:|:-:|---|
-| **d1** | `rl_flat` / `rl_flat_lab` / `rl_rough_lab` | ✓ | ✓ | 已支持 |
-| **d1h** | — | ○ | ○ | 仅模型——补 config + onnx 即用 |
-| **tita** | — | ○ | ○ | 仅模型——补 config + onnx 即用 |
+支持 **d1** —— 策略 `rl_flat` / `rl_flat_lab` / `rl_rough_lab`,sim2sim 与 sim2real 均可。
 
 测试平台:Ubuntu 22.04 · ROS 2 Humble · Python 3.10。
 
@@ -25,27 +19,39 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 
 # sim2sim(三个终端):
 ./scripts/run_sim.sh                        # Mujoco 仿真(--backend webots 切换后端,--robot 切换机型)
-./scripts/run_policy.sh rl_flat_lab d1      # 策略(--list 查看可选项)
+./scripts/run_policy.sh rl_flat_lab d1      # 策略(可选项见"机型支持")
 ./scripts/run_teleop.sh                     # 遥控:ws 前后 · ad 转向 · qe 平移 · rf 升降 · 空格停 · x 退出
 
-# sim2real:遥控器进入 08 SDK Mode 后仅运行后两条命令,对端换为机载单元,代码不变
 ```
 
 ## 结构
 
 ```
-deploy/       policy_engine.py(纯函数大脑)+ rl_inference.py(ROS 壳)。数据流见 DATAFLOW.md
-sim/          simbase.py(后端共享核心)+ mujoco_sim.py + webots/。topic 契约见 BACKEND.md
-config/       controllers.yaml + *.onnx(按机型);_template/ 是新增机型的骨架
-models/       机器人模型(URDF 为主 + mujoco MJCF 派生):d1 / d1h / tita / d1cargo_out
+deploy/       policy_engine.py(纯函数大脑)+ rl_inference.py(ROS 壳)
+sim/          simbase.py(后端共享核心)+ mujoco_sim.py + webots/
+config/       controllers.yaml + *.onnx;_template/ 新增机型骨架
+models/       机器人模型(URDF 为主 + mujoco MJCF 派生):d1
 scripts/      setup · run_sim · run_policy · run_teleop
-src/ddt_msgs/ 消息契约,唯一需要 build 的包
+src/ddt_msgs/ 消息契约
 ```
 
 ## 新增机型
 
-无需改动代码:放入一份 `config/<robot>/`(controllers.yaml + onnx)与 `models/<robot>_description/`。
-模板在 `config/_template/`,步骤见 [docs/ADD_ROBOT.md](docs/ADD_ROBOT.md)。
+放入两份文件,再用 `--robot <robot>` 运行。**若**策略用的观测都是引擎已有的
+(见 `deploy/policy_engine.py` 的 `_OBS_SPECS`),则无需改代码;用到新观测则需在
+那里加一条 + 一个对应的 `_obs_*` 函数。
+
+- **`config/<robot>/`** —— 复制 `config/_template/controllers.yaml` 并按机器人改:
+  `joints`(MJCF 执行器顺序)、`wheel_indices`、`transform_up.stand_jpos`(静置站姿),
+  以及每个策略一个块(观测名、各 scale、增益,取自你的训练)。把 `*.onnx` 放进同目录。
+- **`models/<robot>_description/`** —— `urdf/robot.urdf`(+ 网格),以及 Mujoco
+  后端要的 `mujoco/robot.xml` + `scene.xml`(IMU 传感器
+  `trunk_quat`/`trunk_gyro`/`trunk_accel`;执行器顺序必须与 `joints` 一致)。
+
+```bash
+./scripts/run_sim.sh --robot <robot>
+./scripts/run_policy.sh <policy> <robot>
+```
 
 ## 依赖
 

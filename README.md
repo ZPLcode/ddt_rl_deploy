@@ -8,13 +8,7 @@ RL policy deployment for DDT robots. Self-contained repository: sim2sim and sim2
 
 ## Robots
 
-`d1` is the deliverable. Everything else is experimental or model-only.
-
-| Robot | Policies | sim2sim | sim2real | Status |
-|---|---|:-:|:-:|---|
-| **d1** | `rl_flat` / `rl_flat_lab` / `rl_rough_lab` | ✓ | ✓ | Supported |
-| **d1h** | — | ○ | ○ | Model only — add config + onnx to enable |
-| **tita** | — | ○ | ○ | Model only — add config + onnx to enable |
+Supports **d1** — policies `rl_flat` / `rl_flat_lab` / `rl_rough_lab`, sim2sim and sim2real.
 
 Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 
@@ -26,7 +20,7 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 
 # sim2sim (three terminals):
 ./scripts/run_sim.sh                        # Mujoco (--backend webots to switch, --robot to change model)
-./scripts/run_policy.sh rl_flat_lab d1      # policy (--list for options)
+./scripts/run_policy.sh rl_flat_lab d1      # policy (see Robots for the list)
 ./scripts/run_teleop.sh                     # teleop: ws fwd/back · ad turn · qe strafe · rf height · space stop · x quit
 
 # sim2real: place the remote in 08 SDK Mode, run only the last two commands;
@@ -36,18 +30,33 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 ## Layout
 
 ```
-deploy/       policy_engine.py (pure-function brain) + rl_inference.py (ROS shell). Dataflow: DATAFLOW.md
-sim/          simbase.py (shared backend core) + mujoco_sim.py + webots/. Topic contract: BACKEND.md
+deploy/       policy_engine.py (pure-function brain) + rl_inference.py (ROS shell)
+sim/          simbase.py (shared backend core) + mujoco_sim.py + webots/
 config/       controllers.yaml + *.onnx (per robot); _template/ is the skeleton for new robots
-models/       robot models (URDF primary + derived Mujoco MJCF): d1 / d1h / tita / d1cargo_out
+models/       robot models (URDF primary + derived Mujoco MJCF): d1
 scripts/      setup · run_sim · run_policy · run_teleop
 src/ddt_msgs/ message contract, the only package that requires a build
 ```
 
 ## Adding a robot
 
-No code changes: add a `config/<robot>/` (controllers.yaml + onnx) and `models/<robot>_description/`.
-Template is `config/_template/`; steps in [docs/ADD_ROBOT.md](docs/ADD_ROBOT.md).
+Add two files, then run with `--robot <robot>`. No code changes **if** the policy
+uses observations the engine already has (see `_OBS_SPECS` in
+`deploy/policy_engine.py`); a new observation type means one entry there plus a
+matching `_obs_*` method.
+
+- **`config/<robot>/`** — copy `config/_template/controllers.yaml` and edit it:
+  `joints` (MJCF actuator order), `wheel_indices`, `transform_up.stand_jpos`
+  (resting stand pose), and one per-policy block (observation names, scales and
+  gains from your training run). Put the `*.onnx` in the same folder.
+- **`models/<robot>_description/`** — `urdf/robot.urdf` (+ meshes) and, for the
+  Mujoco backend, `mujoco/robot.xml` + `scene.xml` (IMU sensors
+  `trunk_quat`/`trunk_gyro`/`trunk_accel`; actuator order must match `joints`).
+
+```bash
+./scripts/run_sim.sh --robot <robot>
+./scripts/run_policy.sh <policy> <robot>
+```
 
 ## Dependencies
 

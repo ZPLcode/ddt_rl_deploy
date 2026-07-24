@@ -431,13 +431,11 @@ class PolicyEngine:
         return out
 
     # ------------------------------------------------------------------ #
-    #  One inference (
+    #  One inference 
     # ------------------------------------------------------------------ #
 
     def infer(self, state: RobotState, cmd: Command):
-        """One inference step: assemble obs, run onnx, update _last_actions.
-        Caller owns the cadence (wall-clock timer at control_dt). No stamp
-        gate, so the state source must run at real time."""
+        """One inference step: assemble obs, run onnx, update _last_actions."""
         self._infer_dt = self.cfg.control_dt
         self._update_observations(state, cmd)
         self._run_inference()

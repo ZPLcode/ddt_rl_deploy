@@ -50,9 +50,7 @@ class RLInferenceNode(Node):
         self._create_subscriptions()
         self._joint_cmd_pub = self.create_publisher(
             JointControlCommand, self._tp('command/joint_command'), 10)
-        # two wall-clock timers: infer at control_dt (trained rate), publish at
-        # 200 Hz so wheel damping sees live velocity. no stamp gate -> state
-        # source must run at real time (sim self-paces; real robot always does).
+        # two wall-clock timers: infer at control_dt(50Hz), publish at 200 Hz
         self._infer_timer = self.create_timer(self._control_dt, self._infer_cb)
         self._publish_timer = self.create_timer(0.005, self._publish_cb)
         # one-shot startup check: warn if no state source instead of idling
@@ -70,8 +68,8 @@ class RLInferenceNode(Node):
     # ----------------------------------------------------------------------- #
 
     def _declare_params(self):
-        self.declare_parameter('config_file', '')   # path to params yaml
-        self.declare_parameter('policy_name', '')   # key inside the yaml
+        self.declare_parameter('config_file', '')   
+        self.declare_parameter('policy_name', '')  
         self.declare_parameter('onnx_path', '')
         self.declare_parameter('policy_type', 'np3o')       # np3o / ppo / asap
         self.declare_parameter('output_name', 'actions')
@@ -94,7 +92,7 @@ class RLInferenceNode(Node):
         self.declare_parameter('joint_kd', [0.0])
         self.declare_parameter('control_type', 'P')    # P or P_V
         self.declare_parameter('episode_length', 0.0)
-        # debug only: disables posture guard + staleness watchdog. never on real.
+        # debug only: disables posture guard + staleness watchdog. 
         self.declare_parameter('debug_disable_guards', False)
 
     def _load_yaml_section(self, config_file: str, policy_name: str):
@@ -103,7 +101,6 @@ class RLInferenceNode(Node):
             full = yaml.safe_load(f)
         if not policy_name:
             return (full if isinstance(full, dict) else {}), full
-        # Try dot-separated path first: 'a.b.c'
         try:
             node = full
             for key in policy_name.split('.'):
@@ -233,8 +230,6 @@ class RLInferenceNode(Node):
 
         self._control_type = str(y('control_type', 'control_type'))
 
-        # time-gated at the trained control period, not frame-gated on
-        # joint_states count (frame-gating drifts with the publish rate)
         self._control_dt = float(cfg.get('control_dt', 0.02))
         self._episode_length = float(y('episode_length', 'episode_length'))
 
@@ -264,6 +259,16 @@ class RLInferenceNode(Node):
         if not self._tu_ok:
             self.get_logger().warning(
                 'transform_up params missing/mismatched — starting directly in rl mode')
+
+        # transform_down params: graceful fold-down on clean exit (optional)
+        td = self._find_key_recursive(full_yaml, 'transform_down')
+        td = td if isinstance(td, dict) else {}
+        self._td_fold_jpos = np.array(td.get('fold_jpos', []), dtype=np.float32)
+        self._td_kp = np.array(td.get('joint_kp', []), dtype=np.float32)
+        self._td_kd = np.array(td.get('joint_kd', []), dtype=np.float32)
+        self._td_fold_timer = float(td.get('fold_timer', 3.0))
+        self._td_ok = n > 0 and all(
+            len(a) == n for a in (self._td_fold_jpos, self._td_kp, self._td_kd))
 
     def _build_config(self) -> PolicyConfig:
         """Pack the loaded ROS params into the transport-free engine config."""
@@ -409,8 +414,7 @@ class RLInferenceNode(Node):
         # 200 Hz: re-decode with live velocity so wheel damping stays current
         if self._state_stamp is None:
             return
-        # staleness watchdog: state source died (sim killed / link dropped) but
-        # wall-clock timers keep firing -> damping, stay there
+        # staleness watchdog
         if not self._no_guards and self._mode != 'damping' and \
                 self._state_walltime is not None and \
                 (time.monotonic() - self._state_walltime) > 0.2:
@@ -420,8 +424,6 @@ class RLInferenceNode(Node):
         if self._mode == 'standup':
             self._publish(self._standup_command())
         elif self._mode == 'rl':
-            # decode with live state; wait for first inference so the
-            # zero-action default is never published
             if not self._inferred_once:
                 return
             state, _ = self._snapshot()
@@ -498,9 +500,50 @@ class RLInferenceNode(Node):
             jc.kd.append(0.0 if jname in self._wheel_joints else 5.0)
         return jc
 
+    def send_folddown(self, period=0.02):
+        # graceful sit-down on clean exit (mirrors FSMState_TransformDown):
+        if not self._td_ok or self._mode == 'damping' or self._state_walltime is None:
+            return
+        if time.monotonic() - self._state_walltime > 0.2:
+            return
+        w, x, y, z = self._quat_wxyz
+        roll, pitch, _ = euler_from_quat(w, x, y, z)
+        if abs(roll) > math.radians(30.0) or abs(pitch) > math.radians(45.0):
+            return
+        q0 = np.array([self._joint_pos.get(j, 0.0) for j in self._joint_names],
+                      dtype=np.float32)
+        target = self._td_fold_jpos.copy()
+        for j in self._wheel_joints:              # wheels don't fold
+            i = self._joint_names.index(j)
+            target[i] = q0[i]
+        dur = max(self._td_fold_timer * float(np.max(np.abs(q0 - target))), 1e-3)
+        self.get_logger().info(f'folddown {dur:.2f}s -> damping')
+        t0 = time.monotonic()
+        while True:
+            ratio = min(1.0, (time.monotonic() - t0) / dur)
+            pose = (1.0 - ratio) * q0 + ratio * target
+            jc = JointCommand()
+            for i, jname in enumerate(self._joint_names):
+                jc.name.append(jname)
+                if jname in self._wheel_joints:
+                    jc.position.append(0.0)
+                    jc.velocity.append(0.0)
+                    jc.effort.append(0.0)
+                    jc.kp.append(0.0)
+                    jc.kd.append(float(self._td_kd[i]))
+                else:
+                    jc.position.append(float(pose[i]))
+                    jc.velocity.append(0.0)
+                    jc.effort.append(0.0)
+                    jc.kp.append(float(self._td_kp[i]))
+                    jc.kd.append(float(self._td_kd[i]))
+            self._publish(jc)
+            if ratio >= 1.0:
+                break
+            time.sleep(period)
+
     def send_damping_burst(self, n=20, period=0.02):
-        # on shutdown: downstream keeps executing the last command forever, so
-        # never exit with a high-kp command latched — overwrite with damping
+        # on shutdown
         for _ in range(n):
             self._publish(self._damping_command())
             time.sleep(period)
@@ -522,16 +565,17 @@ class RLInferenceNode(Node):
 def main():
     rclpy.init()
     node = RLInferenceNode()
-    # SIGTERM exits through the same damping path as Ctrl-C
-    def _sigterm(*_):
+    def _sig(*_):
         raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, _sigterm)
+    signal.signal(signal.SIGINT, _sig)
+    signal.signal(signal.SIGTERM, _sig)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         try:
+            node.send_folddown()
             node.send_damping_burst()
         except Exception:
             pass

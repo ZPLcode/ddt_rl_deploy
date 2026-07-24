@@ -3,11 +3,11 @@
 
 Backends subclass SimBackend and implement only their engine bindings (read
 q/dq, apply torque, read IMU, drive the step loop). Joint order, stand pose,
-hold gains, the MIT-PD law, command matching and the DDS contract (see
-sim/BACKEND.md) live here in one copy.
+hold gains, the MIT-PD law, command matching and the DDS contract live here
+in one copy.
 
 Per-robot data comes from config/<robot>/controllers.yaml via spec(robot) —
-adding a robot needs no code change (see docs/ADD_ROBOT.md).
+adding a robot needs no code change (see README).
 """
 
 import os
@@ -64,7 +64,7 @@ class RobotSpec:
             raise FileNotFoundError(
                 f'no config for robot {robot!r}: {path} not found. To add it: '
                 f'`cp -r config/_template config/{robot}` and fill it in '
-                f'(see docs/ADD_ROBOT.md)')
+                f'(see README)')
         cfg = yaml.safe_load(open(path))
         joints = _find(cfg, 'joints')
         hold_pose = _find(cfg, 'stand_jpos')
@@ -82,7 +82,7 @@ def spec(robot):
 
 class SimBackend(Node):
     """Base node: command cache, hold/track MIT-PD, joint_states/imu pub +
-    command sub with the BACKEND.md QoS. Subclasses bind their engine:
+    command sub with the topic-contract QoS. Subclasses bind their engine:
     build handles from spec.joint_names, apply compute_torque(q, dq) each
     step, publish via publish_state()."""
 
@@ -137,7 +137,7 @@ class SimBackend(Node):
         return (self.kp * (self.pos_cmd - q)
                 + self.kd * (self.vel_cmd - dq) + self.tau_ff)
 
-    # -- publish the BACKEND.md state contract; quat is (w,x,y,z) --------------
+    # -- publish the state contract; quat is (w,x,y,z) ------------------------
     def publish_state(self, q, dq, quat_wxyz, gyro, acc, effort=None):
         now = self.get_clock().now().to_msg()
 
