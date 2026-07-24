@@ -20,6 +20,7 @@ from simbase import SimBackend, spec   # noqa: E402
 
 
 class WebotsBackend(SimBackend):
+    """Webots binding for SimBackend: torque-mode motors, position sensors, IMU."""
 
     def __init__(self, spec):
         super().__init__('webots_sim', spec, imu_frame='imu_link')

@@ -1,88 +1,105 @@
-# 仿真/真机后端契约
+# Sim / real backend contract
 
-部署 App(`deploy/rl_inference.py`)是**后端无关**的:它只讲下面这套 ROS 2 topic
-契约。任何后端——某个仿真器,或真机的机载单元——只要讲同一套契约,就能接上,
-**App 一个字不改**。这就是 sim==real 的实现方式。
+The deploy App (`deploy/rl_inference.py`) is **backend-agnostic**: it depends only
+on the ROS 2 topic contract below. Any backend — a simulator, or a real robot's
+onboard unit — integrates by satisfying the same contract, **with no changes to the
+App**. This is how sim==real is achieved.
 
-这份文件是给"写一个新后端"的人看的规格书(相当于 Lite3 的 `RobotInterface.h`,
-但落在进程边界上,而不是编译进 App 的接口类)。
+This is the specification for authors of a new backend. It plays the same interface
+role as a robot-interface header, but lives at the process boundary — a ROS topic
+contract, not an interface class compiled into the App.
 
-## 后端必须做的三件事
+## The three backend responsibilities
 
-| # | 做什么 | topic | 类型 |
+| # | Responsibility | topic | Type |
 |---|---|---|---|
-| 1 | **发关节状态** | `joint_states` | `sensor_msgs/JointState` |
-| 2 | **发 IMU** | `imu_sensor_broadcaster/imu` | `sensor_msgs/Imu` |
-| 3 | **收关节命令并执行** | `command/joint_command` | `ddt_msgs/JointControlCommand` |
+| 1 | **Publish joint state** | `joint_states` | `sensor_msgs/JointState` |
+| 2 | **Publish IMU** | `imu_sensor_broadcaster/imu` | `sensor_msgs/Imu` |
+| 3 | **Receive joint commands and execute them** | `command/joint_command` | `ddt_msgs/JointControlCommand` |
 
-以及一条隐性要求:**按实时(1× 墙钟)推进**(见下)。
+Plus one implicit requirement: **advance in real time (1× wall clock)** (see below).
 
 ---
 
-## 1. `joint_states`(后端发)
+## 1. `joint_states` (backend publishes)
 
-- `name[]`:关节名,**必须与 `config/<robot>/controllers.yaml` 的 `joints` 列表一致**
-  (App 按名字匹配,顺序不强制,但名字要对得上)。
-- `position[]` / `velocity[]`:每关节角/角速度。**必需**。
-- `effort[]`:可选(App 不读)。
-- `header.stamp`:建议填物理时间(App 目前用墙钟节奏,不依赖它,但填上有益调试)。
-- **QoS**:`BEST_EFFORT` / `VOLATILE` / `KEEP_LAST(1)`(与 App 订阅端一致;
-  RELIABLE 发布也兼容)。
+- `name[]`: joint names, **must match the `joints` list in
+  `config/<robot>/controllers.yaml`** (the App matches by name; order is not
+  enforced, but the names must correspond).
+- `position[]` / `velocity[]`: per-joint angle / angular velocity. **Required**.
+- `effort[]`: optional (App ignores it).
+- `header.stamp`: fill with physics time where available (the App runs on wall-clock
+  timing and does not depend on it, but it aids debugging).
+- **QoS**: `BEST_EFFORT` / `VOLATILE` / `KEEP_LAST(1)` (matches the App's
+  subscription; RELIABLE publishers also work).
 
-## 2. `imu_sensor_broadcaster/imu`(后端发)
+## 2. `imu_sensor_broadcaster/imu` (backend publishes)
 
-- `orientation`:机身姿态四元数。App 读 `w, x, y, z`(注意 ROS 消息字段是 x,y,z,w,
-  按字段名填即可)。**必需**。
-- `angular_velocity`:机身系角速度(陀螺)。**必需**。
-- `linear_acceleration`:可选(App 不读,填上无妨)。
-- `header.frame_id`:建议 `trunk_imu`。
-- QoS:同 `joint_states`。
+- `orientation`: body attitude quaternion. The App reads `w, x, y, z` (the ROS
+  message fields are x,y,z,w — fill by field name). **Required**.
+- `angular_velocity`: body-frame angular velocity (gyro). **Required**.
+- `linear_acceleration`: optional (App ignores it; filling it is harmless).
+- `header.frame_id`: `trunk_imu` recommended.
+- QoS: same as `joint_states`.
 
-## 3. `command/joint_command`(后端收,并执行)
+## 3. `command/joint_command` (backend receives and executes)
 
-App 每关节发一个 MIT 五元组;后端按 PD + 前馈执行:
+The App sends one MIT 5-tuple per joint; the backend runs PD + feedforward:
 
 ```
 τ_joint = effort + kp · (position − q) + kd · (velocity − dq)
 ```
 
-- 字段:`header, name[], kp[], kd[], position[], velocity[], effort[]`(按 `name` 对号入座)。
-- **腿**:position 目标 + kp/kd → 位置 PD。
-- **轮(P_V)**:velocity 目标 + kd(kp=0)→ 速度控制。
-- **轮(P)**:effort 已由 App 算好,kp=kd=0 → 直接施加力矩。
-- 后端**每个物理步都用最新缓存的命令重算**(零阶保持),命令到达节奏不影响力矩平滑。
-- QoS:`RELIABLE` / `KEEP_LAST(10)`(与 App 发布端一致)。
+- Fields: `header, name[], kp[], kd[], position[], velocity[], effort[]` (matched by `name`).
+- **Legs**: position target + kp/kd → position PD.
+- **Wheel (P_V)**: velocity target + kd (kp=0) → velocity control.
+- **Wheel (P)**: effort already computed by the App, kp=kd=0 → apply torque directly.
+- The backend **recomputes every physics step from the latest cached command**
+  (zero-order hold); command arrival cadence does not affect torque smoothness.
+- QoS: `RELIABLE` / `KEEP_LAST(10)` (matches the App's publisher).
 
 ---
 
-## 约定(容易漏)
+## Conventions (commonly missed)
 
-- **实时节流**:后端必须把物理推进节流到 ≈1× 墙钟(如 `sleep(dt − 本步耗时)`)。
-  App 用墙钟定时器锁 50Hz 推理,**前提就是状态源是实时的**;跑成非实时(无头狂奔)
-  会让策略频率错乱。真机天然满足;仿真必须自己节流。
-- **命名空间**:若设了环境变量 `ROBOT_NS`,所有 topic 要加 `<ROBOT_NS>/` 前缀
-  (App 侧也会加,两边要一致)。
-- **初始位姿**:首条命令到达前,后端应 PD 保持一个稳定位姿(别让机器人在 App 连上
-  之前就瘫掉)。App 的 standup 模式会从当前实测位姿把它抬起来。
-- **关节名/IMU 约定错了不会报错,只会行为异常**——名字对不上则该关节读到 0、
-  发的命令被丢;四元数/角速度坐标系错则策略发散。对表用参照实现最稳。
+- **Real-time throttle**: the backend must throttle physics to ≈1× wall clock
+  (e.g. `sleep(dt − step_cost)`). The App locks 50Hz inference with a wall-clock
+  timer, **which assumes the state source is real-time**; running non-real-time
+  (headless full-speed) corrupts the policy rate. Real robots satisfy this
+  inherently; sims must throttle themselves.
+- **Namespace**: if the env var `ROBOT_NS` is set, all topics take a
+  `<ROBOT_NS>/` prefix (the App adds it too; both sides must agree).
+- **Initial pose**: before the first command arrives, the backend should PD-hold
+  a stable pose (the robot must not collapse before the App connects). The App's
+  standup mode lifts it from the current measured pose.
+- **A wrong joint-name / IMU convention does not error; it misbehaves silently** — a name
+  that does not match reads 0 for that joint and its command is dropped; a wrong
+  quaternion / angular-velocity frame diverges the policy. Cross-check against a
+  reference implementation.
 
 ---
 
-## 参照实现 & 加一个新后端
+## Reference implementations & adding a new backend
 
-- **共享核心**:`sim/simbase.py` 是单一真相源——`RobotSpec`(关节序 / hold 姿势 / 增益)
-  + `SimBackend(Node)`(命令缓存、MIT-PD、state+imu 收发与 QoS,全在这里)。
-  **新后端继承 `SimBackend`,只写引擎绑定**(读 q/dq、施力、读 IMU、驱动 step 循环);
-  契约细节不用重抄、也不会在后端之间漂移(以前抄两遍漂出过 bug)。
-- **参照**:`sim/mujoco_sim.py`(最完整,含 passive viewer + 墙钟节流)与
-  `sim/webots/webots_sim.py`(最薄,~100 行)都是范例。
-- **轻量后端**(纯 Python + DDS,如 PyBullet):新建 `sim/<name>_sim.py`,继承 `SimBackend`。
-  `./scripts/run_sim.sh --backend <name>` 会自动发现。
-- **框架后端**(Gazebo/Webots 等,需各自 ros2 集成):新建目录 `sim/<name>/`,
-  放一个可执行的 `sim/<name>/run.sh` 作为入口(内部启 launch / 控制器节点,
-  只要最终讲上面的 topic 契约即可)。同样被 `--backend <name>` 自动发现。
-- **真机**:不用写后端——机载单元讲同一套契约(进遥控器 `08 SDK Mode` 后接管)。
-  只跑 `run_policy.sh` + `run_teleop.sh`,对面换成真机。
+- **Shared core**: `sim/simbase.py` is the single source of truth — `RobotSpec`
+  (joint order / hold pose / gains) + `SimBackend(Node)` (command cache, MIT-PD,
+  state+imu I/O and QoS, all here). **A new backend subclasses `SimBackend` and
+  writes only the engine binding** (read q/dq, apply force, read IMU, drive the
+  step loop); contract details are not recopied and cannot drift between backends
+  (duplicating the contract details previously introduced a bug).
+- **References**: `sim/mujoco_sim.py` (most complete, with passive viewer +
+  wall-clock throttle) and `sim/webots/webots_sim.py` (smallest, ~100 lines) are
+  both examples.
+- **Lightweight backend** (pure Python + DDS, e.g. PyBullet): add
+  `sim/<name>_sim.py` subclassing `SimBackend`.
+  `./scripts/run_sim.sh --backend <name>` auto-discovers it.
+- **Framework backend** (Gazebo/Webots etc., each needs its own ros2
+  integration): add a directory `sim/<name>/` with an executable
+  `sim/<name>/run.sh` as the entry point (it starts the launch / controller nodes
+  internally; the only requirement is that it satisfies the topic contract above).
+  Also auto-discovered by `--backend <name>`.
+- **Real robot**: no backend to write — the onboard unit satisfies the same contract
+  (it takes over after entering `08 SDK Mode` on the remote). Run
+  `run_policy.sh` + `run_teleop.sh` with the real robot on the other side.
 
-`./scripts/run_sim.sh --list-backends` 列出当前已装好的后端。
+`./scripts/run_sim.sh --list-backends` lists the backends currently installed.

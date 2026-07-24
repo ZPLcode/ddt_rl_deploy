@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# sim2sim 仿真后端启动器。后端只需讲 sim/BACKEND.md 的 topic 契约,deploy 不变。
-#   ./run_sim.sh                          # 默认 mujoco 后端(GUI)
-#   ./run_sim.sh --backend webots --gui   # 换后端(webots GUI 走独显渲染)
-#   ./run_sim.sh --robot d1cargo_out      # 换机型(透传给后端,自动找对应模型)
-#   ./run_sim.sh --no-viewer              # 其余参数一律透传给后端
-#   ./run_sim.sh --list-backends          # 列出已装好的后端
+# sim2sim backend launcher. A backend implements the topic contract in sim/BACKEND.md; deploy is unchanged.
+#   ./run_sim.sh                          # default mujoco backend (GUI)
+#   ./run_sim.sh --backend webots --gui   # pick a backend (webots GUI renders on the discrete GPU)
+#   ./run_sim.sh --robot d1cargo_out      # pick a robot (passed through; backend resolves the model)
+#   ./run_sim.sh --no-viewer              # any other args pass straight through to the backend
+#   ./run_sim.sh --list-backends          # list installed backends
 #
-# 后端发现规则(加后端 = 丢个文件,不用改本脚本):
-#   sim/<name>_sim.py   -> python3 跑它            (轻量后端,如 mujoco)
-#   sim/<name>/run.sh   -> 执行它                  (框架后端,如 webots)
+# Backend discovery (add a backend = drop a file, no edits here):
+#   sim/<name>_sim.py   -> run with python3   (lightweight backend, e.g. mujoco)
+#   sim/<name>/run.sh   -> execute it         (framework backend, e.g. webots)
 set -eo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -27,13 +27,13 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --backend)   BACKEND="$2"; shift 2 ;;
         --backend=*) BACKEND="${1#*=}"; shift ;;
-        --list-backends) echo "已装后端:"; list_backends; exit 0 ;;
+        --list-backends) echo "installed backends:"; list_backends; exit 0 ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
 
 [ -f "$REPO/install/setup.bash" ] || {
-    echo "错误: 仓库还没 build(缺 install/)—— 先运行 ./scripts/setup.sh" >&2; exit 1; }
+    echo "error: repo not built (no install/) — run ./scripts/setup.sh first" >&2; exit 1; }
 source "$REPO/env.sh" >/dev/null
 
 PY="$REPO/sim/${BACKEND}_sim.py"
@@ -43,8 +43,8 @@ if [ -f "$PY" ]; then
 elif [ -x "$SH" ]; then
     exec "$SH" "${ARGS[@]}"
 else
-    echo "错误: 未找到后端 '$BACKEND'" >&2
-    echo "已装后端:" >&2; list_backends >&2
-    echo "新增后端见 sim/BACKEND.md" >&2
+    echo "error: backend '$BACKEND' not found" >&2
+    echo "installed backends:" >&2; list_backends >&2
+    echo "adding a backend: see sim/BACKEND.md" >&2
     exit 1
 fi

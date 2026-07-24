@@ -111,7 +111,6 @@
         commands_name: ["lin_vel_x", "lin_vel_y", "ang_vel_z", "base_height"]
         commands_scale: [2.0, 2.0, 0.25, 1.0]
         commands_gain: [1.0, 1.0, 1.0, 1.0]
-        commands_comp: [0.0, 0.0, 0.0, 0.0]
         max_commands: [1.0, 1.0, 1.0, 0.50]
         min_commands: [-1.0, -1.0, -1.0, 0.19]
         # control parameters

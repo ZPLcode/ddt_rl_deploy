@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 
-# ROS / colcon (this repo is overlaid into an external ws; nothing built here)
+# ROS / colcon build outputs (setup.sh builds ddt_msgs in-tree)
 build/
 install/
 log/
@@ -16,7 +16,6 @@ MUJOCO_LOG.TXT
 .idea/
 
 # NOTE: *.onnx policies ARE tracked on purpose (repo is self-contained).
-*.pyc
 
 # Webots GUI project state
 *.wbproj

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 键盘遥控(sim2sim / sim2real 通用)
-#   w/s 前后 · a/d 转向 · q/e 平移 · r/f 升降 · 空格停 · x 退出
+# Keyboard teleop (same for sim2sim and sim2real)
+#   w/s fwd-back · a/d turn · q/e strafe · r/f raise-lower · space stop · x quit
 set -eo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO/env.sh" >/dev/null

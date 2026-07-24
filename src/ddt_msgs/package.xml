@@ -2,10 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
         <name>ddt_msgs</name>
-        <version>0.0.1</version>
-        <description>Interfaces for example_pkg</description>
-        <maintainer email="liukexin@directdrivetech.com">lkx</maintainer>
-        <license>Apache License 2.0</license>
+        <version>1.0.0</version>
+        <description>ROS 2 message/service interfaces for DDT RL locomotion deploy (JointControlCommand, UserCommand, etc.)</description>
+        <maintainer email="liukexin@directdrivetech.com">Direct Drive Technology</maintainer>
+        <license>Apache-2.0</license>
 
         <buildtool_depend>ament_cmake_auto</buildtool_depend>
         <depend>std_msgs</depend>

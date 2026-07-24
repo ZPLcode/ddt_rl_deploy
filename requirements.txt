@@ -1,6 +1,6 @@
-# deploy/ + sim/ 运行所需的 pip 依赖。
-# 注意: numpy 不在此固定 —— ROS Humble 的 Python 绑定要用系统 numpy,
-#       由 scripts/setup.sh 统一处理(装完依赖后回退到系统版)。
-mujoco
-onnxruntime
-pyyaml
+# pip dependencies for deploy/ + sim/.
+# numpy is intentionally NOT pinned here: ROS Humble's Python bindings need the
+# system numpy, so scripts/setup.sh reverts to it after installing these wheels.
+mujoco>=3.1,<4
+onnxruntime>=1.16,<2
+pyyaml>=6,<7

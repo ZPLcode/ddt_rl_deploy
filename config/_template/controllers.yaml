@@ -10,7 +10,7 @@
 #   [APP]   deploy/rl_inference.py: FSM gains + the per-policy blocks
 #   [TRAIN] tagged values must match the training export / ONNX. The app
 #           dim-checks obs/action counts, but a wrong scale is silent — copy
-#           from the export, don't eyeball.
+#           from the export, do not eyeball.
 #
 # Values below are a worked example for a 16-DoF wheel-legged quadruped
 # (d1: 4 legs x hip/thigh/calf/wheel). Every list has length N = joint count.
@@ -69,7 +69,7 @@
       # -- standup FSM. sim holds stand_jpos before the policy connects; the
       #    app's standup ramps to it with the gains below. length N. --
       transform_up:
-        stand_jpos: [0.0, 0.8, -1.6, 0.0, -0.0, 0.8, -1.6, 0.0, 0.0, 1.0, -1.6, 0.0, -0.0, 1.0, -1.6, 0.0]  # <FILL> resting stand pose (d1 is asymmetric: front thigh 0.8, rear 1.0 — don't guess symmetric)
+        stand_jpos: [0.0, 0.8, -1.6, 0.0, -0.0, 0.8, -1.6, 0.0, 0.0, 1.0, -1.6, 0.0, -0.0, 1.0, -1.6, 0.0]  # <FILL> resting stand pose (d1 is asymmetric: front thigh 0.8, rear 1.0 — do not assume symmetric)
         fold_jpos:  [0.0, 1.0, -2.4, 0.0, -0.0, 1.0, -2.4, 0.0, 0.0, 1.6, -2.4, 0.0, -0.0, 1.6, -2.4, 0.0]  # <FILL> crouched pose standup starts from
         fold_timer: 2.0
         stand_timer: 2.0
@@ -90,10 +90,12 @@
         output_name: "nn_output"                  # ONNX output tensor name
         control_type: "P_V"                       # P_V = legs position + wheels velocity; "P" = pure position
 
-        # -- [TRAIN] structure — the app dim-checks these against the ONNX --
-        num_obs: 57                               # <FILL> [TRAIN] per-frame observation dim
-        num_actions: 16                           # <FILL> [TRAIN] = N
-        history_len: 10                           # <FILL> [TRAIN] observation history length
+        # -- [TRAIN] structure. The app derives the obs dim from observations_name
+        #    (+ num_actions) and history_len, and dim-checks THAT against the ONNX
+        #    input; the rest must match training exactly (wrong values are silent). --
+        num_obs: 57                               # <FILL> [TRAIN] doc only; not read (obs dim derived from observations_name)
+        num_actions: 16                           # <FILL> [TRAIN] = N; sizes joint obs + gains (not itself checked vs ONNX)
+        history_len: 10                           # <FILL> [TRAIN] observation history length (part of the dim-check)
         observations_name: ["ang_vel", "gravity", "commands", "dof_pos", "dof_vel", "last_actions"]  # <FILL> [TRAIN] order must match training
 
         # -- command interface (teleop / set_command feeds these) --

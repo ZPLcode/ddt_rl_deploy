@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-# Transport shell: subscribes joint_states / imu / cmd_twist / cmd_pose,
-# snapshots them into RobotState/Command and hands them to PolicyEngine
-# (policy_engine.py), which does obs assembly + onnx + decode. This node
-# knows only ROS 2; the engine knows only the math.
+"""Transport shell: ROS 2 topics in, joint_command out.
+
+Snapshots joint_states / imu / cmd_twist / cmd_pose into RobotState/Command
+and hands them to PolicyEngine (policy_engine.py), which does obs assembly +
+onnx + decode. This node knows only ROS 2; the engine knows only the math.
+"""
 
 import math
 import os
@@ -35,6 +37,8 @@ from policy_engine import (
 # --------------------------------------------------------------------------- #
 
 class RLInferenceNode(Node):
+    """ROS 2 node: sensor topics in, joint_command out; standup -> rl -> damping mode FSM on two wall-clock timers."""
+
     def __init__(self):
         super().__init__('rl_inference_node')
         self._declare_params()
@@ -136,7 +140,7 @@ class RLInferenceNode(Node):
                 cfg, full_yaml = self._load_yaml_section(config_file, policy_name)
                 self.get_logger().info(f'Loaded config: {config_file} [{policy_name}]')
             except Exception as e:
-                # fail fast with the valid names, don't idle on ROS defaults
+                # fail fast with the valid names; do not idle on ROS defaults
                 self.get_logger().error(f'Failed to load config: {e}')
                 try:
                     with open(config_file) as f:
@@ -145,7 +149,7 @@ class RLInferenceNode(Node):
                 except Exception:
                     names = []
                 if names:
-                    self.get_logger().error('可用策略: ' + ', '.join(names))
+                    self.get_logger().error('available policies: ' + ', '.join(names))
                 raise SystemExit(1)
 
         def y(yaml_key, ros_param):
@@ -237,8 +241,8 @@ class RLInferenceNode(Node):
         self._no_guards = bool(g('debug_disable_guards').value)
         if self._no_guards:
             self.get_logger().warning(
-                '!! debug_disable_guards=true —— 姿态守卫 + 断流看门狗已关闭,'
-                '仅供可视化观察,切勿用于真机 !!')
+                '!! debug_disable_guards=true — posture guard + staleness '
+                'watchdog OFF; visualization only, never on real hardware !!')
 
         # transform_up params (FSMState_TransformUp): fold-then-stand ramps
         tu = self._find_key_recursive(full_yaml, 'transform_up')
@@ -374,12 +378,11 @@ class RLInferenceNode(Node):
         self._nostate_timer.cancel()      # one-shot
         if self._state_stamp is None:
             self.get_logger().warning(
-                '启动 3s 仍未收到 joint_states —— 仿真/机器人在线吗?'
-                '先启动 ./scripts/run_sim.sh(sim2sim),'
-                '或检查 ROS_LOCALHOST_ONLY / ROS_DOMAIN_ID / ROBOT_NS')
+                'no joint_states after 3s — verify the sim/robot is online; start '
+                './scripts/run_sim.sh (sim2sim), or check '
+                'ROS_LOCALHOST_ONLY / ROS_DOMAIN_ID / ROBOT_NS')
 
     def _infer_cb(self):
-        # fires at control_dt; one inference per call, rl mode only
         if self._mode != 'rl' or self._state_stamp is None:
             return
         # posture guard (Lite3 thresholds: roll 30deg pitch 45deg) -> damping
@@ -403,7 +406,7 @@ class RLInferenceNode(Node):
         self._iter += 1
 
     def _publish_cb(self):
-        # fires at 200 Hz, publishes per current mode
+        # 200 Hz: re-decode with live velocity so wheel damping stays current
         if self._state_stamp is None:
             return
         # staleness watchdog: state source died (sim killed / link dropped) but
@@ -413,12 +416,12 @@ class RLInferenceNode(Node):
                 (time.monotonic() - self._state_walltime) > 0.2:
             self._mode = 'damping'
             self.get_logger().error(
-                'joint_states 断流 >0.2s -> damping(需重启本节点恢复)')
+                'joint_states stalled >0.2s -> damping (restart this node to recover)')
         if self._mode == 'standup':
             self._publish(self._standup_command())
         elif self._mode == 'rl':
-            # decode with live state; wait for first inference so we never
-            # publish the zero-action default
+            # decode with live state; wait for first inference so the
+            # zero-action default is never published
             if not self._inferred_once:
                 return
             state, _ = self._snapshot()
@@ -431,7 +434,7 @@ class RLInferenceNode(Node):
     # ----------------------------------------------------------------------- #
 
     def _standup_command(self):
-        # two wall-clock ramps, exactly FSMState_TransformUp:
+        # two wall-clock ramps:
         #   fold:  measured q0 -> fold_jpos, duration fold_timer * max|q0-fold|
         #   stand: fold_jpos -> stand_jpos, duration stand_timer (+settle)
         # wheels: kp 0 / kd damped, never interpolated
@@ -441,7 +444,7 @@ class RLInferenceNode(Node):
                 [self._joint_pos.get(j, 0.0) for j in self._joint_names],
                 dtype=np.float32)
             self._su_fold_target = self._tu_fold_jpos.copy()
-            for j in self._wheel_joints:          # wheels don't fold
+            for j in self._wheel_joints:          # wheels do not fold
                 i = self._joint_names.index(j)
                 self._su_fold_target[i] = self._su_q0[i]
             err = float(np.max(np.abs(self._su_q0 - self._su_fold_target)))
@@ -484,7 +487,7 @@ class RLInferenceNode(Node):
         return jc
 
     def _damping_command(self):
-        # FSMState_Passive: everything zero, legs kd=5, wheels kd=0
+        # legs kd=5, wheels kd=0
         jc = JointCommand()
         for jname in self._joint_names:
             jc.name.append(jname)

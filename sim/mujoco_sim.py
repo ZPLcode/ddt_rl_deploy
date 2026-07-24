@@ -34,10 +34,11 @@ def _scene_for(robot):
         os.path.dirname(os.path.abspath(__file__)),
         '..', 'models', f'{robot}_description', 'mujoco', 'scene.xml')
 
-INIT_BASE_HEIGHT = 0.35   # free-joint spawn height; let it settle onto wheels
+INIT_BASE_HEIGHT = 0.35   # free-joint spawn height; allow it to settle onto the wheels
 
 
 class MujocoSimLite(SimBackend):
+    """MuJoCo binding for SimBackend: build handles, step physics, publish state."""
 
     def __init__(self, scene_path, spec):
         super().__init__('mujoco_sim_lite', spec, imu_frame='trunk_imu')
@@ -108,7 +109,7 @@ def main():
     node = MujocoSimLite(args.scene or _scene_for(args.robot), spec(args.robot))
 
     # Callbacks (command cache) run on a separate spin thread; the main
-    # thread is the wall-clock-paced physics loop, as in the references.
+    # thread is the wall-clock-paced physics loop.
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
@@ -147,7 +148,7 @@ def main():
                     f' kp={node.kp[1]:.0f}')
 
             # Wall-clock pacing with drift correction (reference: pybullet
-            # simulator's sleep(dt - cost)).  If we fall badly behind, resync
+            # simulator's sleep(dt - cost)).  If the loop falls badly behind, resync
             # instead of bursting to catch up.
             next_t += node.dt
             delay = next_t - time.perf_counter()

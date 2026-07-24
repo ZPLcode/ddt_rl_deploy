@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""
-Transport-free RL policy engine (the "brain").
+"""Transport-free RL policy engine (the "brain").
 
-No ROS/DDS here: RobotState + Command in, JointCommand out. Same split as
-DeepRobotics lite3_policy_runner.hpp vs main.cpp. Math mirrors the vendor
-C++ FSMState_RL* and was ported verbatim from the original monolithic node
-(kept as reference at deploy/rl_inference_origin.py).
+No ROS/DDS here: RobotState + Command in, JointCommand out. Obs assembly and
+the MIT-PD decode mirror the vendor C++ FSMState_RL* controllers.
 """
 
 import math
@@ -106,7 +103,7 @@ class PolicyConfig:
 # --------------------------------------------------------------------------- #
 #
 # name -> (dim, compute method). dim is an int or callable(cfg)->int.
-# dim and compute live together so they can't drift; adding an obs = one entry
+# dim and compute live together so they cannot drift; adding an obs = one entry
 # + one _obs_<name> method. config picks which obs run and their order.
 
 _OBS_SPECS = {
@@ -155,14 +152,14 @@ class PolicyEngine:
         obs_dim = sum(self._obs_dim(n) for n in cfg.obs_names)
         ins = self._session.get_inputs()
 
-        def ints(shape):     # symbolic dims (str/None) are skipped
+        def ints(shape):    
             return [d for d in shape if isinstance(d, int)]
 
         if cfg.policy_type == 'np3o':
             expected = [[1, obs_dim], [1, cfg.history_len, obs_dim]]
         elif cfg.policy_type == 'ppo':
             expected = [[1, (cfg.history_len + 1) * obs_dim]]
-        else:               # asap layouts vary (obs subset) — skip strict check
+        else:              
             return
         for inp, exp in zip(ins, expected):
             got = ints(inp.shape)
@@ -202,23 +199,23 @@ class PolicyEngine:
         # current observations
         self._obs = {n: np.zeros(self._obs_dim(n), dtype=np.float32)
                      for n in cfg.obs_names}
-        # history: shape (history_len, obs_dim), row 0 = oldest, row -1 = newest
+        # history
         self._obs_hist = {n: np.zeros((cfg.history_len, self._obs_dim(n)), dtype=np.float32)
                           for n in cfg.obs_names}
         self._last_actions = np.zeros(cfg.num_actions, dtype=np.float32)
 
         self._current_time = 0.0
-        self._current_height = 0.0             # integrated base_height command
-        self._infer_dt = self.cfg.control_dt   # fixed control period (wall-clock timer)
-        self._first_frame = True               # pre-fill history ring on the first tick
+        self._current_height = 0.0            
+        self._infer_dt = self.cfg.control_dt   
+        self._first_frame = True              
 
     # ------------------------------------------------------------------ #
-    #  Observation update  (mirrors FSMState_RL::update_observations)
+    #  Observation update
     # ------------------------------------------------------------------ #
 
     def _update_observations(self, state: RobotState, cmd: Command):
         cfg = self.cfg
-        # shift history (row 0 oldest, row -1 newest)
+        # shift history 
         if cfg.history_len == 1:
             for n in cfg.obs_names:
                 self._obs_hist[n][0] = self._obs[n]
@@ -227,30 +224,22 @@ class PolicyEngine:
                 self._obs_hist[n][:-1] = self._obs_hist[n][1:]
                 self._obs_hist[n][-1]  = self._obs[n]
 
-        # recompute each obs; self._obs[n] still holds the previous value while
-        # its function runs (the ang_vel low-pass relies on this)
         for n in cfg.obs_names:
             self._obs[n] = getattr(self, _OBS_SPECS[n][1])(state, cmd)
 
-        # first frame: fill the whole history with the current obs, like Isaac
-        # Lab's CircularBuffer on first push after reset (zero history is OOD)
         if self._first_frame:
             for n in cfg.obs_names:
                 self._obs_hist[n][:] = self._obs[n]
             self._first_frame = False
 
-    # -- per-observation compute functions (registered in _OBS_SPECS) -------- #
-
+    
     def _obs_ang_vel(self, state, cmd):
-        # low-pass 0.97*new + 0.03*old, matches C++ (its comment has the
-        # weights backwards; code is authoritative). deploy-only filter.
         raw = state.gyro * self.cfg.ang_vel_scale
         return 0.03 * self._obs['ang_vel'] + 0.97 * raw
 
     def _obs_gravity(self, state, cmd):
         w, x, y, z = state.quat_wxyz
         R = quat_to_rotation_matrix(w, x, y, z)
-        # C++ uses R_w2b * [0,0,-1]; our R is body->world so transpose
         return R.T @ np.array([0.0, 0.0, -1.0], dtype=np.float32)
 
     def _obs_commands(self, state, cmd):
@@ -264,7 +253,6 @@ class PolicyEngine:
             elif cname == 'ang_vel_z':
                 raw = cfg.cmd_gain[i] * cmd.twist_angular[2]
             elif cname == 'base_height':
-                # integrate twist z over time (C++ integrate_height)
                 self._current_height = float(np.clip(
                     self._current_height + cmd.twist_linear[2] * self._infer_dt,
                     cfg.cmd_min[i], cfg.cmd_max[i]))
@@ -327,11 +315,10 @@ class PolicyEngine:
         return np.array([phase_val], dtype=np.float32)
 
     def _obs_action_rescale(self, state, cmd):
-        # fixed constant fed as obs by asap policies (C++ hard-codes it too)
         return np.array([0.25], dtype=np.float32)
 
     # ------------------------------------------------------------------ #
-    #  Build inference inputs  (mirrors update_forward variants)
+    #  Build inference inputs
     # ------------------------------------------------------------------ #
 
     def _build_np3o(self):
@@ -345,8 +332,7 @@ class PolicyEngine:
         return [obs[None], hist[None]]  # (1, obs_dim), (1, history_len, obs_dim)
 
     def _build_ppo(self):
-        """Single input: [obs_hist (per-obs-name, oldest→newest), obs].
-        Matches FSMState_RLPPO::update_forward."""
+        """Single input: [obs_hist (per-obs-name, oldest→newest), obs]."""
         cfg = self.cfg
         rows = []
         for n in cfg.obs_names:
@@ -358,8 +344,7 @@ class PolicyEngine:
         return [combined[None]]
 
     def _build_asap(self):
-        """Single input with custom ordering (newest→oldest history).
-        Matches FSMState_RLASAP::update_forward."""
+        """Single input with custom ordering (newest→oldest history)."""
         sorted_hist_names = [
             'last_actions', 'ang_vel', 'dof_pos', 'dof_vel', 'gravity', 'ref_motion_phase',
         ]
@@ -408,7 +393,7 @@ class PolicyEngine:
         self._last_actions = np.array(outputs[0], dtype=np.float32).flatten()
 
     # ------------------------------------------------------------------ #
-    #  Decode  (mirrors FSMState_RL::run joint command section)
+    #  Decode
     # ------------------------------------------------------------------ #
 
     def decode(self, state: RobotState) -> JointCommand:
@@ -425,15 +410,13 @@ class PolicyEngine:
 
             if jname in cfg.wheel_joints:
                 if cfg.control_type == 'P':
-                    # P: wheel torque computed here from live velocity, sent as
-                    # pure effort (why decode() runs on the fast publish timer)
                     out.position.append(0.0)
                     out.velocity.append(0.0)
                     out.effort.append((action * scale + default) * kp
                                       - kd * state.joint_vel.get(jname, 0.0))
                     out.kp.append(0.0)
                     out.kd.append(0.0)
-                else:  # P_V: velocity target, downstream PD does kd*(v*-v)
+                else:  # P_V
                     out.position.append(0.0)
                     out.velocity.append(action * scale)
                     out.effort.append(0.0)
@@ -448,7 +431,7 @@ class PolicyEngine:
         return out
 
     # ------------------------------------------------------------------ #
-    #  One inference (cadence decided by the caller)
+    #  One inference (
     # ------------------------------------------------------------------ #
 
     def infer(self, state: RobotState, cmd: Command):

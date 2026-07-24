@@ -1,79 +1,72 @@
-# rl_inference 数据流速查
+# rl_inference dataflow reference
 
-一页看懂"传感器 → 策略 → 电机"这条闭环。`rl_inference.py`(壳)+ `policy_engine.py`(脑)是 C++ `FSMState_RL` 的 Python 镜像。`rl_inference_origin.py` 是未重构基线参照。
+Summary of the sensor → policy → motor loop. `rl_inference.py` (shell) +
+`policy_engine.py` (brain) are the Python port of the C++ `FSMState_RL`.
 
-## 主线(spin 之后每一拍)
-
-```
-joint_states 到 ─► 回调缓存 ─► 双墙钟定时器 ─► 推理/解码 ─► 发命令 ─► 电机
-     _joint_cb        RobotState    infer@50Hz     engine.infer   _publish
-                                    publish@200Hz  engine.decode  JointControlCommand
-```
-
-## 模式(自包含安全外壳,一个字符串变量,零状态机类)
+## Main line (every tick after spin)
 
 ```
-standup ──完成──► rl ──姿态超限(roll>30°/pitch>45°)──► damping(锁死)
-   任何模式 ──joint_states 断流>0.2s──► damping(锁死)
-   任何时刻退出(Ctrl-C/SIGTERM) ──► main finally: 阻尼连发20条 ──► 退出
+joint_states in ─► callback cache ─► dual wall-clock timers ─► infer/decode ─► publish cmd ─► motors
+    _joint_cb         RobotState        infer@50Hz             engine.infer     _publish
+                                        publish@200Hz          engine.decode    JointControlCommand
 ```
 
-- **standup**:镜像 `FSMState_TransformUp` 两段线性插值——fold(时长=fold_timer×最大关节偏差)→ stand(stand_timer)+100拍settle;专属 kp/kd/前馈来自 yaml `transform_up` 段;轮子恒 kp=0/kd 阻尼/不折叠
-- **damping**:镜像 `FSMState_Passive`——全 0,腿 kd=5、轮 kd=0
-- **退出降阻尼**:下游 bridge 永久保持最后一条指令(官方 SDK 文档),高 kp 下退出=绷死;所以 SIGINT/SIGTERM 统一走 finally 的阻尼连发
+## Modes (self-contained safety shell — one string variable, no state-machine class)
+
+```
+standup ──done──► rl ──posture over limit (roll>30° / pitch>45°)──► damping (locked)
+   any mode ──joint_states stalled >0.2s──► damping (locked)
+   exit any time (Ctrl-C / SIGTERM) ──► main finally: emit 20 damping cmds ──► quit
 ```
 
-## 函数速查(执行序)
+- **standup**: ports `FSMState_TransformUp` — two-stage linear interp: fold
+  (duration = fold_timer × max joint deviation) → stand (stand_timer) + 100-tick
+  settle; dedicated kp/kd/feedforward from the yaml `transform_up` section;
+  wheels fixed at kp=0 / kd damping / no fold.
+- **damping**: ports `FSMState_Passive` — all zeros, legs kd=5, wheels kd=0.
+- **exit damping**: the downstream bridge holds the last command indefinitely (per
+  official SDK docs); exiting under high kp leaves the robot rigidly seized, so
+  SIGINT/SIGTERM both route through the finally block's damping burst.
 
-| 函数 | 一句话 |
+## Functions (execution order)
+
+| Function | One line |
 |---|---|
-| `_declare_params` | 声明所有 ROS 参数 + 默认值 |
-| `_load_yaml_section` / `_find_key_recursive` | 从 controllers.yaml 抠出一个策略段(点分路径→全树递归搜) |
-| `_load_params` + `y()` | 融合"YAML 优先、ROS 默认兜底" → `self._xxx` |
-| `_init_onnx` | 加载 .onnx 成会话,读出输入名(喂数据靠名字) |
-| `_obs_dim` + `_init_state` | 按维度表预分配观测/历史环/缓存(维度合计必须 = 模型输入,如 57) |
-| `_create_subscriptions` + 4 回调 | 订 joint_states/imu/cmd_twist/cmd_pose;回调只填缓存 |
-| `_control_loop` / `step` | 门控:该不该推理;每拍都发布 |
-| `_update_observations` | 先移历史、再算新观测;按 obs 注册表逐段拼 |
-| `_build_np3o/ppo/asap` | 把 obs+历史拼成模型要的输入布局 |
-| `_run_inference` | 按 policy_type 选布局 → session.run → `_last_actions` |
-| `_publish_joint_command` / `decode` | 解码成 MIT 五元组,发 command/joint_command |
+| `_declare_params` | Declare all ROS params + defaults |
+| `_load_yaml_section` / `_find_key_recursive` | Extract one policy section from controllers.yaml (dotted path → recursive whole-tree search) |
+| `_load_params` + `y()` | Merge "YAML first, ROS default fallback" → `self._xxx` |
+| `_init_onnx` | Load the .onnx into a session, read input names (inputs are fed by name) |
+| `_obs_dim` + `_init_state` | Preallocate obs / history ring / caches per the dim table (dims must sum to model input, e.g. 57) |
+| `_create_subscriptions` + 4 callbacks | Subscribe joint_states/imu/cmd_twist/cmd_pose; callbacks only fill caches |
+| `_control_loop` / `step` | Gate whether to infer; publish every tick |
+| `_update_observations` | Shift history first, then compute new obs; assemble section by section per the obs registry |
+| `_build_np3o/ppo/asap` | Pack obs+history into the input layout the model expects |
+| `_run_inference` | Select layout by policy_type → session.run → `_last_actions` |
+| `_publish_joint_command` / `decode` | Decode into the MIT 5-tuple, publish command/joint_command |
 
-## 易错点(踩过的坑)
+## Pitfalls (learned in practice)
 
-| 坑 | 说明 |
+| Pitfall | Note |
 |---|---|
-| **推理频率漂** | origin 在 `_joint_cb` 里按帧门控 `_iter % decimation`,频率随 joint_states 到达率漂。重构版用**墙钟定时器**跑 `control_dt`(照 DeepRobotics/LeggedLab)→ 锁 50Hz。**前提:状态源实时**(sim 自节流到 realtime、真机天然实时);非实时 sim 会跑错频率 |
-| **速度命令失灵** | origin 订 `TwistStamped`,而键盘/rl_controller 发 `Twist`,类型不匹配 DDS 静默丢。重构版改 `Twist` |
-| **轮子解析漏** | origin 只认 `wheel_names`;d1 的 yaml 给的是 `wheel_indices` → 轮子被当普通关节位置控制、角度污染 dof_pos。重构版补 `wheel_indices→名字` 分支 |
-| **首帧零历史** | Isaac Lab reset 后首 append 把历史铺满当前 obs(circular_buffer.py:136-139)。部署首帧也必须预填,否则起步 ~0.2s 喂零历史(训练没见过) |
-| **低通读旧值** | `_update_observations` 先移历史(存旧 `_obs`)、再算新值;ang_vel 低通 `0.03*旧+0.97*新` 依赖此时 `_obs` 还是旧值 —— 顺序不能反 |
-| **重力要转置** | `R.T @ [0,0,-1]`:Python `quat_to_rotation_matrix` 返回机身→世界,取逆(=转置)得机身系重力 |
-| **base_height 是积分** | 命令里 base_height = 对 twist.linear.z 积分(`height += vz*infer_dt`)再 clip,不是直给 |
-| **last_actions 存原始** | `_last_actions` = 网络原始输出(未缩放);下一拍喂回观测 + 解码都用它 |
-| **推理疏、发布密** | 推理每 N 帧,发布每帧;轮子 P 模式 `effort=(...)·kp − kd·实时轮速` 靠每帧发布刷新阻尼 |
-| **关节序 = 策略序** | 不做 reindex,靠"config 关节序 == 训练动作序" + 命令带名字。序写错会静默错位 |
+| **Inference rate drift** | Frame-gating with `_iter % decimation` inside `_joint_cb` ties the rate to joint_states arrival. Drive inference from a wall-clock timer at `control_dt` instead → locks 50Hz. Requires a real-time state source (sim self-throttled to realtime, real robot inherently realtime); a non-realtime sim runs the wrong rate. |
+| **Dead velocity commands** | Keyboard / rl_controller publish `Twist`. Subscribing to `TwistStamped` type-mismatches and DDS drops it silently — subscribe to `Twist`. |
+| **Missed wheel parsing** | Recognizing only `wheel_names` misses configs (d1) that give `wheel_indices` → wheels get position-controlled as ordinary joints and pollute dof_pos. Handle the `wheel_indices → names` branch too. |
+| **First-frame zero history** | Isaac Lab's first append after reset fills history with the current obs (circular_buffer.py:136-139). Deployment must prefill the first frame too, else the first ~0.2s feeds zero history (never seen in training). |
+| **Low-pass reads stale value** | `_update_observations` shifts history first (stores old `_obs`), then computes new values; the ang_vel low-pass `0.03*old + 0.97*new` relies on `_obs` still being old at that point — order must not flip. |
+| **Gravity needs transpose** | `R.T @ [0,0,-1]`: `quat_to_rotation_matrix` returns body→world; invert (= transpose) to get gravity in the body frame. |
+| **base_height is integrated** | In the command, base_height integrates twist.linear.z (`height += vz*infer_dt`) then clips — not passed through directly. |
+| **last_actions stores raw** | `_last_actions` = raw network output (unscaled); the next tick feeds it back into obs, and decode uses it too. |
+| **Sparse inference, dense publish** | Infer every N frames, publish every frame; wheel P-mode `effort = (…)·kp − kd·live_wheel_vel` relies on per-frame publish to refresh damping. |
+| **Joint order = policy order** | No reindexing; relies on "config joint order == training action order" + named commands. A wrong order silently misaligns. |
 
-## 关键契约
+## Key contracts
 
-- **MIT 五元组** `{position, velocity, effort, kp, kd}` → 下游 `τ = effort + kp·(position−q) + kd·(velocity−dq)`
-  - 腿:`position = action·scale + default`,kp/kd 交下游 PD
-  - 轮 P:`effort = (action·scale+default)·kp − kd·实时轮速`,其余 0(下游 τ=effort)
-  - 轮 P_V:`velocity = action·scale`,只留 kd(下游 τ=kd·(vel−dq))
-- **三种输入布局**(必须匹配训练框架):
-  - np3o:两输入 `(1,obs)` + `(1,hist,obs)`,历史保持 2D
-  - ppo:一输入,历史(先obs名后帧)拼平 + 当前
-  - asap:一输入,obs 子集,历史新→老
-- **历史环布局**:`[t-H+1 … t-1, t]`,行 0 最老、行 -1 最新(与 Isaac Lab CircularBuffer 一致)
-
-## origin vs 重构版
-
-| | origin | 重构版(engine + shell) |
-|---|---|---|
-| 驱动 | `_joint_cb` 每帧调 `_control_loop` | 双墙钟定时器:`infer@control_dt` + `publish@200Hz` |
-| 频率 | 帧计数 `_iter % decimation`(随到达率漂) | 墙钟 `control_dt` 锁 50Hz(需状态源实时) |
-| 速度命令 | `TwistStamped`(错) | `Twist` |
-| 轮子 | 只认 wheel_names | + wheel_indices |
-| 首帧历史 | 零(与训练不符) | 预填当前 obs |
-| 结构 | 数学与 rclpy 焊死 | `PolicyEngine`(纯,零 ROS)+ 薄壳 |
-| obs 拼装 | 一个大 if/elif | `_OBS_SPECS` 注册表 + 派发 |
+- **MIT 5-tuple** `{position, velocity, effort, kp, kd}` → downstream `τ = effort + kp·(position−q) + kd·(velocity−dq)`
+  - Legs: `position = action·scale + default`, kp/kd handled by downstream PD.
+  - Wheel P: `effort = (action·scale+default)·kp − kd·live_wheel_vel`, rest 0 (downstream τ = effort).
+  - Wheel P_V: `velocity = action·scale`, keep only kd (downstream τ = kd·(vel−dq)).
+- **Three input layouts** (must match the training framework):
+  - np3o: two inputs `(1,obs)` + `(1,hist,obs)`, history stays 2D.
+  - ppo: one input, history flattened (obs-name major, frame minor) + current.
+  - asap: one input, obs subset, history newest→oldest.
+- **History ring layout**: `[t-H+1 … t-1, t]`, row 0 oldest, row -1 newest (matches Isaac Lab CircularBuffer).
