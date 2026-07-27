@@ -27,13 +27,12 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 ## 结构
 
 ```
-deploy/   policy_engine.py(纯函数大脑)+ rl_inference.py(ROS 壳)
-src/      colcon 工作区:ddt_msgs;MuJoCo ros2_control 桥(mujoco_sim_ros2 +
-          mujoco_ros2_control + mujoco_bridge);topic_command_controller(透传,
-          把 joint_command 喂给仿真);<robot>_description(URDF/xacro + MJCF)
-config/   <robot>/controllers.yaml + *.onnx —— 每机型策略,rl_inference 读
-scripts/  setup · run_sim · run_policy · run_teleop
-vendor/   lodepng(MuJoCo 构建的源码依赖)
+deploy/     Python 应用:policy_engine(大脑)+ rl_inference(ROS 壳)+ joy_mapping + teleop
+src/robot/  自己的 ROS 包:ddt_msgs、topic_command_controller(透传)、<robot>_description(URDF/xacro + MJCF)
+src/sim/    MuJoCo sim2sim 仿真栈(mujoco_sim_ros2 + mujoco_ros2_control + mujoco_bridge);真机构建时整个跳过
+config/     <robot>/controllers.yaml + *.onnx —— 每机型策略,rl_inference 读
+scripts/    shell 启动器:setup · run_sim · run_policy · run_teleop
+vendor/     lodepng(MuJoCo 构建的源码依赖)
 ```
 
 ## 新增机型
@@ -42,7 +41,7 @@ vendor/   lodepng(MuJoCo 构建的源码依赖)
 (见 `deploy/policy_engine.py` 的 `_OBS_SPECS`),则无需改代码;用到新观测则需在
 那里加一条 + 一个对应的 `_obs_*` 函数。
 
-- **`src/<robot>_description/`** —— 一个 ament 包(照 `src/d1_description` 建):
+- **`src/robot/<robot>_description/`** —— 一个 ament 包(照 `src/robot/d1_description` 建):
   `xacro/robot.xacro` + `xacro/ros2control.xacro`(声明每关节 position/velocity/
   effort/kp/kd 命令接口 + `trunk_imu` 传感器),以及 `mujoco/scene.xml` + `robot.xml`
   (IMU 传感器 `trunk_quat`/`trunk_gyro`/`trunk_accel`)。

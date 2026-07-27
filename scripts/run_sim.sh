@@ -4,7 +4,7 @@
 # controller consumes command/joint_command from run_policy.sh.
 #   ./run_sim.sh                      # mujoco + d1
 #   ./run_sim.sh --backend gazebo     # switch simulator (mujoco | gazebo | webots)
-#   ./run_sim.sh --robot d1h          # switch robot (needs src/<robot>_description)
+#   ./run_sim.sh --robot d1h          # switch robot (needs src/robot/<robot>_description)
 set -eo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

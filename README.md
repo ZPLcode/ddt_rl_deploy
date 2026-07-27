@@ -30,13 +30,12 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 ## Layout
 
 ```
-deploy/   policy_engine.py (pure-function brain) + rl_inference.py (ROS shell)
-src/      colcon workspace: ddt_msgs; the MuJoCo ros2_control bridge (mujoco_sim_ros2
-          + mujoco_ros2_control + mujoco_bridge); topic_command_controller (passthrough
-          that feeds joint_command to the sim); <robot>_description (URDF/xacro + MJCF)
-config/   <robot>/controllers.yaml + *.onnx — per-robot policy, read by rl_inference
-scripts/  setup · run_sim · run_policy · run_teleop
-vendor/   lodepng (source dep for the MuJoCo build)
+deploy/     Python app: policy_engine (brain) + rl_inference (ROS shell) + joy_mapping + teleop
+src/robot/  our ROS pkgs: ddt_msgs, topic_command_controller (passthrough), <robot>_description (URDF/xacro + MJCF)
+src/sim/    MuJoCo sim2sim stack (mujoco_sim_ros2 + mujoco_ros2_control + mujoco_bridge); skipped on a real-robot build
+config/     <robot>/controllers.yaml + *.onnx — per-robot policy, read by rl_inference
+scripts/    shell launchers: setup · run_sim · run_policy · run_teleop
+vendor/     lodepng (source dep for the MuJoCo build)
 ```
 
 ## Adding a robot
@@ -46,7 +45,7 @@ uses observations the engine already has (see `_OBS_SPECS` in
 `deploy/policy_engine.py`); a new observation type means one entry there plus a
 matching `_obs_*` method.
 
-- **`src/<robot>_description/`** — an ament package (model on `src/d1_description`):
+- **`src/robot/<robot>_description/`** — an ament package (model on `src/robot/d1_description`):
   `xacro/robot.xacro` + `xacro/ros2control.xacro` (declares the per-joint
   position/velocity/effort/kp/kd command interfaces + the `trunk_imu` sensor),
   and `mujoco/scene.xml` + `robot.xml` (IMU sensors

@@ -4,4 +4,4 @@
 set -eo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO/env.sh" >/dev/null
-exec python3 "$REPO/scripts/teleop.py" "$@"
+exec python3 "$REPO/deploy/teleop.py" "$@"
