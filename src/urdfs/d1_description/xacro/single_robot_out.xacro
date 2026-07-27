@@ -1,0 +1,354 @@
+<?xml version="1.0"?>
+
+<!-- cargo_out variant of d1h_description/xacro/single_robot.xacro.
+     Differences from the original macro:
+       1. new param `yaw` on ${name}_base_joint - set yaw=3.14159 to flip a module
+          180deg about z (this is what turns << into <>); legs follow automatically.
+       2. funtion/docking joints use the fixed pi-compensated origins unconditionally
+          (docking stays inboard at world +-0.173 facing the cargo box, funtion
+          outboard at +-0.5145) - no F/R branches needed.
+     The original file is kept untouched because d1h_description also uses it. -->
+<robot name="single_robot_out"
+    xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro name="single_robot_out" params="name x_offset yaw:=0">
+        <!-- Base link -->
+        <link name="${name}_base_link">
+            <inertial>
+                <origin xyz="0.03074 0.00016 -0.03314" rpy="0 0 0" />
+                <mass value="9.158" />
+                <inertia ixx="0.073416" ixy="0.00014675" ixz="-0.0079314" iyy="0.12672" iyz="1.9414e-05" izz="0.11933"/>
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/base_link.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.75294 0.75294 0.75294 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <box size="0.275 0.15 0.18"/>
+                </geometry>
+            </collision>
+            <collision>
+                <origin xyz="0 0 -0.12" rpy="0 0 0" />
+                <geometry>
+                    <box size="0.35 0.15 0.1"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}_base_joint" type="fixed">
+            <origin xyz="${x_offset} 0 0" rpy="0 0 ${yaw}" />
+            <parent link="base_link" />
+            <child link="${name}_base_link" />
+        </joint>
+
+        <!-- Funtion link -->
+        <link name="${name}_funtion_link">
+            <inertial>
+                <origin xyz="-0.02031 -0.00001 0.00546" rpy="0 0 0" />
+                <mass value="0.7859" />
+                <inertia ixx="0.005595" ixy="0.0" ixz="-4.5e-05" iyy="0.002202" iyz="0.0" izz="0.003725" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/funtion_Link.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.75294 0.75294 0.75294 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0.008 0 0" rpy="0 0 0" />
+                <geometry>
+                    <box size="0.0495 0.15 0.18"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}_funtion_joint" type="fixed">
+            <origin xyz="-0.1545 0 0" rpy="0 0 3.14159" />
+            <parent link="${name}_base_link" />
+            <child link="${name}_funtion_link" />
+            <axis xyz="0 0 0" />
+        </joint>
+
+        <!-- Docking link -->
+        <link name="${name}_docking_link">
+            <inertial>
+                <origin xyz="0.01167 0.01142 0.00562" rpy="0 0 0" />
+                <mass value="1.1043" />
+                <inertia ixx="0.007968" ixy="0.000348" ixz="1.4e-05" iyy="0.002634" iyz="-1.7e-05" izz="0.005995"/>
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/docking_Link.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.75294 0.75294 0.75294 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0.0065 0 0" rpy="0 0 0" />
+                <geometry>
+                    <box size="0.0495 0.15 0.175"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}_docking_joint" type="fixed">
+            <origin xyz="0.187 0 0" rpy="0 0 3.14159" />
+            <parent link="${name}_base_link" />
+            <child link="${name}_docking_link" />
+            <axis xyz="0 0 0" />
+        </joint>
+
+        <!-- Left hip link -->
+        <link name="${name}L_hip">
+            <inertial>
+                <origin xyz="-0.01567766 -0.00005214 -0.09306106" rpy="0 0 0" />
+                <mass value="1.86700" />
+                <inertia ixx="0.004561" ixy="-0.00000066" ixz="-0.00004876" iyy="0.0034067" iyz="-0.00000146" izz="0.0026097" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/L_hip.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.75294 0.75294 0.75294 1" />
+                </material>
+            </visual>
+        </link>
+        <joint name="${name}L_hip_joint" type="revolute">
+            <origin xyz="0.0945 0.0775 0" rpy="1.5708 0 1.5708" />
+            <parent link="${name}_base_link" />
+            <child link="${name}L_hip" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.2346" friction="0.943"/>
+            <limit effort="80" lower="-0.7853981633974483" upper="0.7853981633974483" velocity="20"/>
+        </joint>
+
+        <!-- Left thigh link -->
+        <link name="${name}L_thigh">
+            <inertial>
+                <origin xyz="0.03137855 0.00371524 0.06475758" rpy="0 0 0" />
+                <mass value="2.81160" />
+                <inertia ixx="0.00486852" ixy="-0.00149035" ixz="-0.00234028" iyy="0.0203762" iyz="-0.00032034" izz="0.02095408" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/L_thigh.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.75294 0.75294 0.75294 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0.06 0.02 0" rpy="0 0 0.2617993877991494" />
+                <geometry>
+                    <box size="0.3 0.09 0.05"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}L_thigh_joint" type="revolute">
+            <origin xyz="0.0905 0 -0.0945" rpy="-1.5708 0 -1.5704" />
+            <parent link="${name}L_hip" />
+            <child link="${name}L_thigh" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.2346" friction="0.943"/>
+            <limit effort="80" lower="-1.8325957145940461" upper="3.4033920413889422" velocity="20"/>
+        </joint>
+
+        <!-- Left knee link -->
+        <link name="${name}L_calf">
+            <inertial>
+                <origin xyz="0.12683437 0.01137531 0.00486771" rpy="0 0 0" />
+                <mass value="0.61004" />
+                <inertia ixx="0.00034763" ixy="0.00045139" ixz="-0.00028304" iyy="0.0068336" iyz="0.00001004" izz="0.00692927" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/L_calf.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.75294 0.75294 0.75294 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0.15 0.01 0" rpy="0 0 -0.08" />
+                <geometry>
+                    <box size="0.3 0.04 0.05"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}L_calf_joint" type="revolute">
+            <origin xyz="0.25 0 0" rpy="-0.0 0.0 0.0" />
+            <parent link="${name}L_thigh" />
+            <child link="${name}L_calf" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.2346" friction="0.943"/>
+            <limit effort="80" lower="-2.72" upper="-0.85" velocity="20"/>
+        </joint>
+
+        <!-- Left wheel link -->
+        <link name="${name}L_foot">
+            <inertial>
+                <origin xyz="-0.00001088 0.00000319 0.02475" rpy="0 0 0" />
+                <mass value="1.75470" />
+                <inertia ixx="0.00414743" ixy="-0.00000091" ixz="0.00000144" iyy="0.00415057" iyz="0.00000073" izz="0.0078035" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/L_foot.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0 0 0.0" rpy="0 0 0" />
+                <geometry>
+                    <cylinder length="0.04" radius="0.087"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}L_foot_joint" type="revolute">
+            <origin xyz="0.25 0 0.052166" rpy="0 0 0" />
+            <parent link="${name}L_calf" />
+            <child link="${name}L_foot" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.5" friction="0.0"/>
+            <limit effort="12" lower="-31415926" upper="31415926" velocity="30.0"/>
+        </joint>
+
+        <!-- Right hip link -->
+        <link name="${name}R_hip">
+            <inertial>
+                <origin xyz="0.01567834 -0.00005214 -0.09306094" rpy="0 0 0" />
+                <mass value="1.86700" />
+                <inertia ixx="0.004561" ixy="0.00000066" ixz="0.00004878" iyy="0.0034067" iyz="-0.00000146" izz="0.0026097" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/R_hip.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.75294 0.75294 0.75294 1" />
+                </material>
+            </visual>
+        </link>
+        <joint name="${name}R_hip_joint" type="revolute">
+            <origin xyz="0.0945 -0.0775 0" rpy="1.5708 0 1.5708" />
+            <parent link="${name}_base_link" />
+            <child link="${name}R_hip" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.2346" friction="0.943"/>
+            <limit effort="80" lower="-0.7853981633974483" upper="0.7853981633974483" velocity="20"/>
+        </joint>
+
+        <!-- Right thigh link -->
+        <link name="${name}R_thigh">
+            <inertial>
+                <origin xyz="0.03137957 0.00371556 -0.06475707" rpy="0 0 0" />
+                <mass value="2.81160" />
+                <inertia ixx="0.00486845" ixy="-0.00149037" ixz="0.00234002" iyy="0.02037619" iyz="0.00032032" izz="0.02095416" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/R_thigh.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0.06 0.02 0" rpy="0 0 0.2617993877991494" />
+                <geometry>
+                    <box size="0.3 0.09 0.05"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}R_thigh_joint" type="revolute">
+            <origin xyz="-0.0905 0 -0.0945" rpy="-1.5708 0 -1.5712" />
+            <parent link="${name}R_hip" />
+            <child link="${name}R_thigh" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.2346" friction="0.943"/>
+            <limit effort="80" lower="-1.8325957145940461" upper="3.4033920413889422" velocity="20"/>
+        </joint>
+
+        <!-- Right knee link -->
+        <link name="${name}R_calf">
+            <inertial>
+                <origin xyz="0.12683435 0.01137538 -0.00486802" rpy="0 0 0" />
+                <mass value="0.61004" />
+                <inertia ixx="0.00034764" ixy="0.00045139" ixz="0.00028307" iyy="0.0068336" iyz="-0.00001004" izz="0.00692927" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/R_calf.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0.15 0.01 0" rpy="0 0 -0.08" />
+                <geometry>
+                    <box size="0.3 0.04 0.05"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}R_calf_joint" type="revolute">
+            <origin xyz="0.25 0 0" rpy="0.0 0.0 0.0" />
+            <parent link="${name}R_thigh" />
+            <child link="${name}R_calf" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.2346" friction="0.943"/>
+            <limit effort="80" lower="-2.72" upper="-0.85" velocity="20"/>
+        </joint>
+
+        <!-- Right wheel link -->
+        <link name="${name}R_foot">
+            <inertial>
+                <origin xyz="0.0000105 0.0000048 -0.02475" rpy="0 0 0" />
+                <mass value="1.75470" />
+                <inertia ixx="0.00414978" ixy="-0.00000164" ixz="0.00000051" iyy="0.00414822" iyz="0.00000155" izz="0.0078035" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://d1h_description/meshes/R_foot.STL" />
+                </geometry>
+                <material name="">
+                    <color rgba="1 1 1 1" />
+                </material>
+            </visual>
+            <collision>
+                <origin xyz="0 0 -0.0" rpy="0 0 0" />
+                <geometry>
+                    <cylinder length="0.04" radius="0.087"/>
+                </geometry>
+            </collision>
+        </link>
+        <joint name="${name}R_foot_joint" type="revolute">
+            <origin xyz="0.25 0 -0.052166" rpy="0 0 2.3965" />
+            <parent link="${name}R_calf" />
+            <child link="${name}R_foot" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.5" friction="0.0"/>
+            <limit effort="12" lower="-31415926" upper="31415926" velocity="30.0"/>
+        </joint>
+
+    </xacro:macro>
+</robot>

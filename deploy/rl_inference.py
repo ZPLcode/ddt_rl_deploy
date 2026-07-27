@@ -3,7 +3,9 @@
 
 Snapshots joint_states / imu / cmd_twist / cmd_pose into RobotState/Command
 and hands them to PolicyEngine (policy_engine.py), which does obs assembly +
-onnx + decode. This node knows only ROS 2; the engine knows only the math.
+onnx + decode. Velocity may instead come straight from a raw sensor_msgs/Joy
+topic (joy_command), mapped by joy_mapping.py like ddt_ros2_control's
+teleop_command_node. This node knows only ROS 2; the math lives in the modules.
 """
 
 import math
@@ -20,8 +22,9 @@ from ddt_msgs.msg import JointControlCommand
 from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import Imu, JointState
+from sensor_msgs.msg import Imu, JointState, Joy
 
+from joy_mapping import JoyMapping
 from policy_engine import (
     Command,
     JointCommand,
@@ -37,7 +40,7 @@ from policy_engine import (
 # --------------------------------------------------------------------------- #
 
 class RLInferenceNode(Node):
-    """ROS 2 node: sensor topics in, joint_command out; standup -> rl -> damping mode FSM on two wall-clock timers."""
+    """ROS 2 node: sensor topics in, joint_command out; rl / damping mode on two wall-clock timers."""
 
     def __init__(self):
         super().__init__('rl_inference_node')
@@ -92,7 +95,9 @@ class RLInferenceNode(Node):
         self.declare_parameter('joint_kd', [0.0])
         self.declare_parameter('control_type', 'P')    # P or P_V
         self.declare_parameter('episode_length', 0.0)
-        # debug only: disables posture guard + staleness watchdog. 
+        self.declare_parameter('joy_command', True)   # velocity source = raw sensor_msgs/Joy
+        self.declare_parameter('joy_topic', 'joy')    # axis map/scales from a yaml `joy:` block
+        # debug only: disables posture guard + staleness watchdog.
         self.declare_parameter('debug_disable_guards', False)
 
     def _load_yaml_section(self, config_file: str, policy_name: str):
@@ -233,42 +238,17 @@ class RLInferenceNode(Node):
         self._control_dt = float(cfg.get('control_dt', 0.02))
         self._episode_length = float(y('episode_length', 'episode_length'))
 
+        # raw-Joy velocity source: axis arithmetic lives in joy_mapping.py, so
+        # this transport shell just subscribes and delegates (cf. policy_engine).
+        self._joy_command = bool(g('joy_command').value)
+        self._joy_topic = str(g('joy_topic').value)
+        self._joymap = JoyMapping.from_dict(self._find_key_recursive(full_yaml, 'joy'))
+
         self._no_guards = bool(g('debug_disable_guards').value)
         if self._no_guards:
             self.get_logger().warning(
                 '!! debug_disable_guards=true — posture guard + staleness '
                 'watchdog OFF; visualization only, never on real hardware !!')
-
-        # transform_up params (FSMState_TransformUp): fold-then-stand ramps
-        tu = self._find_key_recursive(full_yaml, 'transform_up')
-        tu = tu if isinstance(tu, dict) else {}
-        n = len(self._joint_names)
-        self._tu_fold_jpos  = np.array(tu.get('fold_jpos',  []), dtype=np.float32)
-        self._tu_stand_jpos = np.array(tu.get('stand_jpos', []), dtype=np.float32)
-        self._tu_ff = np.array(tu.get('ff_torque', []), dtype=np.float32)
-        self._tu_kp = np.array(tu.get('joint_kp',  []), dtype=np.float32)
-        self._tu_kd = np.array(tu.get('joint_kd',  []), dtype=np.float32)
-        self._tu_fold_timer  = float(tu.get('fold_timer',  2.0))
-        self._tu_stand_timer = float(tu.get('stand_timer', 2.0))
-        self._tu_ok = n > 0 and all(
-            len(a) == n for a in (self._tu_fold_jpos, self._tu_stand_jpos,
-                                  self._tu_ff, self._tu_kp, self._tu_kd))
-        # C++ hands off to rl 100 update cycles after the ramps finish
-        update_rate = self._find_key_recursive(full_yaml, 'update_rate')
-        self._tu_settle = 100.0 / float(update_rate) if update_rate else 0.25
-        if not self._tu_ok:
-            self.get_logger().warning(
-                'transform_up params missing/mismatched — starting directly in rl mode')
-
-        # transform_down params: graceful fold-down on clean exit (optional)
-        td = self._find_key_recursive(full_yaml, 'transform_down')
-        td = td if isinstance(td, dict) else {}
-        self._td_fold_jpos = np.array(td.get('fold_jpos', []), dtype=np.float32)
-        self._td_kp = np.array(td.get('joint_kp', []), dtype=np.float32)
-        self._td_kd = np.array(td.get('joint_kd', []), dtype=np.float32)
-        self._td_fold_timer = float(td.get('fold_timer', 3.0))
-        self._td_ok = n > 0 and all(
-            len(a) == n for a in (self._td_fold_jpos, self._td_kp, self._td_kd))
 
     def _build_config(self) -> PolicyConfig:
         """Pack the loaded ROS params into the transport-free engine config."""
@@ -314,13 +294,8 @@ class RLInferenceNode(Node):
         self._state_walltime: float | None = None  # wall-clock receipt time (watchdog)
         self._inferred_once = False               # gate publishing until first inference
         self._iter = 0
-        # mode: standup -> rl -> damping (fault/exit). plain string, no FSM classes.
-        self._mode = 'standup' if self._tu_ok else 'rl'
-        self._su_phase = None       # None -> 'fold' -> 'stand'
-        self._su_q0 = None          # measured pose at standup entry
-        self._su_fold_target = None
-        self._su_fold_dur = 0.0
-        self._su_t0 = 0.0
+        # mode: rl -> damping (fault/exit). plain string, no FSM classes.
+        self._mode = 'rl'
 
     # ----------------------------------------------------------------------- #
     #  Subscriptions
@@ -336,6 +311,11 @@ class RLInferenceNode(Node):
         self.create_subscription(JointState,   self._tp('joint_states'),               self._joint_cb, qos)
         self.create_subscription(Twist,        self._tp('command/cmd_twist'),          self._twist_cb, qos)
         self.create_subscription(PoseStamped,  self._tp('command/cmd_pose'),           self._pose_cb,  qos)
+        if self._joy_command:
+            self.create_subscription(Joy, self._tp(self._joy_topic), self._joy_cb, qos)
+            self.get_logger().info(
+                f'raw-Joy velocity source ON ({self._tp(self._joy_topic)} -> twist '
+                'via joy_mapping.py); cmd_twist kept as fallback')
 
     def _imu_cb(self, msg: Imu):
         o = msg.orientation
@@ -358,6 +338,13 @@ class RLInferenceNode(Node):
         q = msg.pose.orientation
         r, p, y = euler_from_quat(q.w, q.x, q.y, q.z)
         self._pose_rpy = np.array([r, p, y], dtype=np.float32)
+
+    def _joy_cb(self, msg: Joy):
+        # delegate axis arithmetic to joy_mapping; fill the caches cmd_twist would
+        tl, ta, pr = self._joymap.to_command(msg.axes)
+        self._twist_linear  = np.array(tl, dtype=np.float32)
+        self._twist_angular = np.array(ta, dtype=np.float32)
+        self._pose_rpy      = np.array(pr, dtype=np.float32)
 
     # ----------------------------------------------------------------------- #
     #  Control tick: snapshot caches → engine → publish
@@ -421,9 +408,7 @@ class RLInferenceNode(Node):
             self._mode = 'damping'
             self.get_logger().error(
                 'joint_states stalled >0.2s -> damping (restart this node to recover)')
-        if self._mode == 'standup':
-            self._publish(self._standup_command())
-        elif self._mode == 'rl':
+        if self._mode == 'rl':
             if not self._inferred_once:
                 return
             state, _ = self._snapshot()
@@ -432,61 +417,8 @@ class RLInferenceNode(Node):
             self._publish(self._damping_command())
 
     # ----------------------------------------------------------------------- #
-    #  Stand-up / damping commands (mirror FSMState_TransformUp / _Passive)
+    #  Damping command (mirror FSMState_Passive)
     # ----------------------------------------------------------------------- #
-
-    def _standup_command(self):
-        # two wall-clock ramps:
-        #   fold:  measured q0 -> fold_jpos, duration fold_timer * max|q0-fold|
-        #   stand: fold_jpos -> stand_jpos, duration stand_timer (+settle)
-        # wheels: kp 0 / kd damped, never interpolated
-        now = time.monotonic()
-        if self._su_phase is None:
-            self._su_q0 = np.array(
-                [self._joint_pos.get(j, 0.0) for j in self._joint_names],
-                dtype=np.float32)
-            self._su_fold_target = self._tu_fold_jpos.copy()
-            for j in self._wheel_joints:          # wheels do not fold
-                i = self._joint_names.index(j)
-                self._su_fold_target[i] = self._su_q0[i]
-            err = float(np.max(np.abs(self._su_q0 - self._su_fold_target)))
-            self._su_fold_dur = max(self._tu_fold_timer * err, 1e-3)
-            self._su_t0 = now
-            self._su_phase = 'fold'
-            self.get_logger().info(
-                f'standup: fold {self._su_fold_dur:.2f}s then stand {self._tu_stand_timer:.2f}s')
-
-        t = now - self._su_t0
-        if self._su_phase == 'fold':
-            ratio = min(1.0, t / self._su_fold_dur)
-            target = (1.0 - ratio) * self._su_q0 + ratio * self._su_fold_target
-            if t >= self._su_fold_dur:
-                self._su_phase = 'stand'
-                self._su_t0 = now
-        else:  # stand
-            ratio = min(1.0, t / self._tu_stand_timer)
-            target = ((1.0 - ratio) * self._su_fold_target
-                      + ratio * self._tu_stand_jpos)
-            if t >= self._tu_stand_timer + self._tu_settle:
-                self._mode = 'rl'
-                self.get_logger().info('standup complete -> rl')
-
-        jc = JointCommand()
-        for i, jname in enumerate(self._joint_names):
-            jc.name.append(jname)
-            if jname in self._wheel_joints:
-                jc.position.append(0.0)
-                jc.velocity.append(0.0)
-                jc.effort.append(0.0)
-                jc.kp.append(0.0)
-                jc.kd.append(float(self._tu_kd[i]))
-            else:
-                jc.position.append(float(target[i]))
-                jc.velocity.append(0.0)
-                jc.effort.append(float(self._tu_ff[i]))
-                jc.kp.append(float(self._tu_kp[i]))
-                jc.kd.append(float(self._tu_kd[i]))
-        return jc
 
     def _damping_command(self):
         # legs kd=5, wheels kd=0
@@ -499,48 +431,6 @@ class RLInferenceNode(Node):
             jc.kp.append(0.0)
             jc.kd.append(0.0 if jname in self._wheel_joints else 5.0)
         return jc
-
-    def send_folddown(self, period=0.02):
-        # graceful sit-down on clean exit (mirrors FSMState_TransformDown):
-        if not self._td_ok or self._mode == 'damping' or self._state_walltime is None:
-            return
-        if time.monotonic() - self._state_walltime > 0.2:
-            return
-        w, x, y, z = self._quat_wxyz
-        roll, pitch, _ = euler_from_quat(w, x, y, z)
-        if abs(roll) > math.radians(30.0) or abs(pitch) > math.radians(45.0):
-            return
-        q0 = np.array([self._joint_pos.get(j, 0.0) for j in self._joint_names],
-                      dtype=np.float32)
-        target = self._td_fold_jpos.copy()
-        for j in self._wheel_joints:              # wheels don't fold
-            i = self._joint_names.index(j)
-            target[i] = q0[i]
-        dur = max(self._td_fold_timer * float(np.max(np.abs(q0 - target))), 1e-3)
-        self.get_logger().info(f'folddown {dur:.2f}s -> damping')
-        t0 = time.monotonic()
-        while True:
-            ratio = min(1.0, (time.monotonic() - t0) / dur)
-            pose = (1.0 - ratio) * q0 + ratio * target
-            jc = JointCommand()
-            for i, jname in enumerate(self._joint_names):
-                jc.name.append(jname)
-                if jname in self._wheel_joints:
-                    jc.position.append(0.0)
-                    jc.velocity.append(0.0)
-                    jc.effort.append(0.0)
-                    jc.kp.append(0.0)
-                    jc.kd.append(float(self._td_kd[i]))
-                else:
-                    jc.position.append(float(pose[i]))
-                    jc.velocity.append(0.0)
-                    jc.effort.append(0.0)
-                    jc.kp.append(float(self._td_kp[i]))
-                    jc.kd.append(float(self._td_kd[i]))
-            self._publish(jc)
-            if ratio >= 1.0:
-                break
-            time.sleep(period)
 
     def send_damping_burst(self, n=20, period=0.02):
         # on shutdown
@@ -575,7 +465,6 @@ def main():
         pass
     finally:
         try:
-            node.send_folddown()
             node.send_damping_burst()
         except Exception:
             pass

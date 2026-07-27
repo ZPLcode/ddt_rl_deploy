@@ -27,12 +27,13 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 ## 结构
 
 ```
-deploy/       policy_engine.py(纯函数大脑)+ rl_inference.py(ROS 壳)
-sim/          simbase.py(后端共享核心)+ mujoco_sim.py + webots/
-config/       controllers.yaml + *.onnx;_template/ 新增机型骨架
-models/       机器人模型(URDF 为主 + mujoco MJCF 派生):d1
-scripts/      setup · run_sim · run_policy · run_teleop
-src/ddt_msgs/ 消息契约
+deploy/   policy_engine.py(纯函数大脑)+ rl_inference.py(ROS 壳)
+src/      colcon 工作区:ddt_msgs;MuJoCo ros2_control 桥(mujoco_sim_ros2 +
+          mujoco_ros2_control + mujoco_bridge);topic_command_controller(透传,
+          把 joint_command 喂给仿真);<robot>_description(URDF/xacro + MJCF)
+config/   <robot>/controllers.yaml + *.onnx —— 每机型策略,rl_inference 读
+scripts/  setup · run_sim · run_policy · run_teleop
+vendor/   lodepng(MuJoCo 构建的源码依赖)
 ```
 
 ## 新增机型
@@ -41,12 +42,12 @@ src/ddt_msgs/ 消息契约
 (见 `deploy/policy_engine.py` 的 `_OBS_SPECS`),则无需改代码;用到新观测则需在
 那里加一条 + 一个对应的 `_obs_*` 函数。
 
-- **`config/<robot>/`** —— 复制 `config/_template/controllers.yaml` 并按机器人改:
-  `joints`(MJCF 执行器顺序)、`wheel_indices`、`transform_up.stand_jpos`(静置站姿),
-  以及每个策略一个块(观测名、各 scale、增益,取自你的训练)。把 `*.onnx` 放进同目录。
-- **`models/<robot>_description/`** —— `urdf/robot.urdf`(+ 网格),以及 Mujoco
-  后端要的 `mujoco/robot.xml` + `scene.xml`(IMU 传感器
-  `trunk_quat`/`trunk_gyro`/`trunk_accel`;执行器顺序必须与 `joints` 一致)。
+- **`src/<robot>_description/`** —— 一个 ament 包(照 `src/d1_description` 建):
+  `xacro/robot.xacro` + `xacro/ros2control.xacro`(声明每关节 position/velocity/
+  effort/kp/kd 命令接口 + `trunk_imu` 传感器),以及 `mujoco/scene.xml` + `robot.xml`
+  (IMU 传感器 `trunk_quat`/`trunk_gyro`/`trunk_accel`)。
+- **`config/<robot>/`** —— `controllers.yaml`(rl_inference 读的策略参数:`joints`、
+  每策略的观测/scale/增益)+ `*.onnx`。
 
 ```bash
 ./scripts/run_sim.sh --robot <robot>
@@ -63,6 +64,6 @@ src/ddt_msgs/ 消息契约
 
 ## 已知限制
 
-- 站起流程不含自翻身(机身翻覆时需人工扶正)。
+- 无脚本起身:节点上电直接进入 RL 模式,机器人须从可站立姿态开始(仿真初始位姿 / 人工扶持);机身翻覆时需人工扶正。
 - Webots 后端 d1 站立有 sim2sim 差异,**策略验证以 Mujoco 为准**。
 - 训练→部署配置仍需手工抄写。

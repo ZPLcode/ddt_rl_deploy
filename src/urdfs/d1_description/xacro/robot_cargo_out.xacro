@@ -1,0 +1,93 @@
+<?xml version="1.0"?>
+
+<!-- d1cargo "out" (<>) variant: original robot.xacro is kept untouched.
+     Matches urdf/robot_cargo_out.urdf and mujoco/robot_cargo_out.xml:
+       - central mower payload (mesh mower.STL, 22.872 kg) fixed under base_link
+       - modules moved apart: +-0.1875 -> +-0.393 to make room for the payload
+       - F module yawed 180deg (yaw=3.14159) -> hips inboard at +-0.2985,
+         knees point outward = "<>" stance; R module not rotated
+     Uses single_robot_out.xacro (yaw param + pi-compensated funtion/docking). -->
+<robot name="d1cargo_description"
+    xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:arg name="hw_env" default="none" />
+
+    <xacro:include filename="$(find d1_description)/xacro/ros2control.xacro"/>
+    <xacro:ros2control hw_env="$(arg hw_env)" />
+
+    <xacro:include filename="$(find d1h_description)/xacro/materials.xacro"/>
+    <xacro:include filename="$(find d1_description)/xacro/single_robot_out.xacro"/>
+
+    <link name="base_link">
+        <visual>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <box size="0.001 0.001 0.001"/>
+            </geometry>
+        </visual>
+        <inertial>
+            <mass value="0.001"/>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+        </inertial>
+    </link>
+
+    <!-- central mower payload between the two modules (SolidWorks 负载框-割草机版, 22.872 kg).
+         mesh frame == base_link frame, so the fixed joint stays at the origin. -->
+    <link name="mower">
+        <visual>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="package://d1_description/meshes/mower.STL"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.75294 0.75294 0.75294 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <mesh filename="package://d1_description/meshes/mower.STL"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="22.872"/>
+            <origin rpy="0 0 0" xyz="-0.0099654 -0.00019956 0.0801"/>
+            <inertia ixx="0.59821" ixy="0.0059593" ixz="-0.0049803" iyy="1.2381" iyz="3.5606e-05" izz="1.1939"/>
+        </inertial>
+    </link>
+    <joint name="mower_joint" type="fixed">
+        <origin rpy="0 0 0" xyz="0 0 0.0"/>
+        <parent link="base_link"/>
+        <child link="mower"/>
+    </joint>
+
+    <link name="imu_link">
+        <inertial>
+            <mass value="0.001"/>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+        </inertial>
+        <visual>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <box size="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="red"/>
+        </visual>
+        <collision>
+            <origin rpy="0 0 0" xyz="0 0 0"/>
+            <geometry>
+                <box size=".001 .001 .001"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="imu_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="imu_link"/>
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+    </joint>
+
+    <!-- F module flipped 180deg (yaw) -> "<>" outward stance; R not rotated -->
+    <xacro:single_robot_out name="F" x_offset="0.393" yaw="3.14159"/>
+    <xacro:single_robot_out name="R" x_offset="-0.393"/>
+</robot>

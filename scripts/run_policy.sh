@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RL policy deploy (same code for sim2sim and sim2real).
+# RL policy deploy 
 #   ./run_policy.sh [policy] [robot]   # defaults: rl_flat_lab d1
 set -eo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

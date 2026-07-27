@@ -14,8 +14,12 @@ python3 -m pip install -r "$REPO/requirements.txt"
 python3 -m pip uninstall -y numpy >/dev/null 2>&1 || true
 python3 -c 'import numpy' 2>/dev/null || python3 -m pip install 'numpy>=1.24,<2'
 
-echo "[2/2] colcon build (ddt_msgs)..."
+echo "[2/2] colcon build (msgs + sim bridge + descriptions)..."
 source "$REPO/env.sh" >/dev/null
-(cd "$REPO" && colcon build)
+# The mujoco sim app links pip mujoco via a CMake shim (no vendored source) and
+# reuses the bundled lodepng, so the build needs no network / MuJoCo source tree.
+(cd "$REPO" && colcon build \
+    --cmake-args -DFETCHCONTENT_SOURCE_DIR_LODEPNG="$REPO/vendor/lodepng" \
+                 -DFETCHCONTENT_FULLY_DISCONNECTED=ON)
 
 echo "setup complete."

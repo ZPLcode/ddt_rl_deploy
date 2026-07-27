@@ -30,12 +30,13 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 ## Layout
 
 ```
-deploy/       policy_engine.py (pure-function brain) + rl_inference.py (ROS shell)
-sim/          simbase.py (shared backend core) + mujoco_sim.py + webots/
-config/       controllers.yaml + *.onnx (per robot); _template/ is the skeleton for new robots
-models/       robot models (URDF primary + derived Mujoco MJCF): d1
-scripts/      setup · run_sim · run_policy · run_teleop
-src/ddt_msgs/ message contract, the only package that requires a build
+deploy/   policy_engine.py (pure-function brain) + rl_inference.py (ROS shell)
+src/      colcon workspace: ddt_msgs; the MuJoCo ros2_control bridge (mujoco_sim_ros2
+          + mujoco_ros2_control + mujoco_bridge); topic_command_controller (passthrough
+          that feeds joint_command to the sim); <robot>_description (URDF/xacro + MJCF)
+config/   <robot>/controllers.yaml + *.onnx — per-robot policy, read by rl_inference
+scripts/  setup · run_sim · run_policy · run_teleop
+vendor/   lodepng (source dep for the MuJoCo build)
 ```
 
 ## Adding a robot
@@ -45,13 +46,13 @@ uses observations the engine already has (see `_OBS_SPECS` in
 `deploy/policy_engine.py`); a new observation type means one entry there plus a
 matching `_obs_*` method.
 
-- **`config/<robot>/`** — copy `config/_template/controllers.yaml` and edit it:
-  `joints` (MJCF actuator order), `wheel_indices`, `transform_up.stand_jpos`
-  (resting stand pose), and one per-policy block (observation names, scales and
-  gains from your training run). Put the `*.onnx` in the same folder.
-- **`models/<robot>_description/`** — `urdf/robot.urdf` (+ meshes) and, for the
-  Mujoco backend, `mujoco/robot.xml` + `scene.xml` (IMU sensors
-  `trunk_quat`/`trunk_gyro`/`trunk_accel`; actuator order must match `joints`).
+- **`src/<robot>_description/`** — an ament package (model on `src/d1_description`):
+  `xacro/robot.xacro` + `xacro/ros2control.xacro` (declares the per-joint
+  position/velocity/effort/kp/kd command interfaces + the `trunk_imu` sensor),
+  and `mujoco/scene.xml` + `robot.xml` (IMU sensors
+  `trunk_quat`/`trunk_gyro`/`trunk_accel`).
+- **`config/<robot>/`** — `controllers.yaml` (policy params rl_inference reads:
+  `joints`, per-policy obs / scales / gains) + the `*.onnx`.
 
 ```bash
 ./scripts/run_sim.sh --robot <robot>
@@ -68,6 +69,6 @@ System **ROS 2 Humble** + pip (`requirements.txt`, handled by `setup.sh`). No ex
 
 ## Known limitations
 
-- Stand-up excludes self-righting (an inverted robot requires a manual reset).
+- No scripted stand-up: the node starts directly in RL mode, so the robot must begin from a stand-ready pose (sim spawn pose / a manually held robot); an inverted robot requires a manual reset.
 - Webots d1 stand shows sim2sim contact difference — **Mujoco is the reference for policy validation**.
 - Train→deploy config is still copied manually; automatic manifest export is TODO.

@@ -7,6 +7,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$(echo "$PATH" | tr ':' '\n' | grep -viE 'conda' | paste -sd:)"
 source /opt/ros/humble/setup.bash
 [ -f "$REPO/install/setup.bash" ] && source "$REPO/install/setup.bash"
+# The vendored MuJoCo sim bridge links pip mujoco's libmujoco.so by SONAME;
+# put pip's lib dir on the loader path so mujoco_sim finds it at runtime.
+MUJOCO_LIB="$(python3 -c 'import os, mujoco; print(os.path.dirname(mujoco.__file__))' 2>/dev/null)"
+[ -n "$MUJOCO_LIB" ] && export LD_LIBRARY_PATH="$MUJOCO_LIB:${LD_LIBRARY_PATH:-}"
 # Network isolation: loopback only, so other machines on the LAN sharing domain 0 do not cross-talk.
 # For cross-network use with a real robot, comment out the next line and use a dedicated ROS_DOMAIN_ID.
 export ROS_LOCALHOST_ONLY=1

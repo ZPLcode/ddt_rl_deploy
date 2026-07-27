@@ -1,0 +1,11 @@
+<library path="topic_command_controller">
+  <class
+    name="topic_command_controller/TopicCommandController"
+    type="topic_command_controller::TopicCommandController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Passthrough controller: writes command/joint_command (ddt_msgs/JointControlCommand)
+      onto the per-joint position/velocity/effort/kp/kd command interfaces.
+    </description>
+  </class>
+</library>

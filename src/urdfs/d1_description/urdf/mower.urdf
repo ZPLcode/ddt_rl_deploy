@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: b216019-dirty  Build Version: 1.6.9690.18173
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="负载框-割草机版">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.0099654 -0.00019956 0.0801"
+        rpy="0 0 0" />
+      <mass
+        value="22.872" />
+      <inertia
+        ixx="0.59821"
+        ixy="0.0059593"
+        ixz="-0.0049803"
+        iyy="1.2381"
+        iyz="3.5606E-05"
+        izz="1.1939" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://负载框-割草机版/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://负载框-割草机版/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+</robot>
