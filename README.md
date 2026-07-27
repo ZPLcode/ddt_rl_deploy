@@ -16,10 +16,10 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 
 ```bash
 # Prerequisite: system ROS 2 Humble installed
-./scripts/setup.sh                          # pip deps + colcon build
+./scripts/setup.sh                          # pip deps + colcon build (default: self-contained mujoco)
 
 # sim2sim (three terminals):
-./scripts/run_sim.sh                        # Mujoco (--backend webots to switch, --robot to change model)
+./scripts/run_sim.sh                        # Mujoco (default); --backend gazebo|webots, --robot, --terrain (webots)
 ./scripts/run_policy.sh rl_flat_lab d1      # policy (see Robots for the list)
 ./scripts/run_teleop.sh                     # teleop: ws fwd/back · ad turn · qe strafe · rf height · space stop · x quit
 
@@ -32,7 +32,8 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 ```
 deploy/     Python app: policy_engine (brain) + rl_inference (ROS shell) + joy_mapping + teleop
 src/robot/  our ROS pkgs: ddt_msgs, topic_command_controller (passthrough), <robot>_description (URDF/xacro + MJCF)
-src/sim/    MuJoCo sim2sim stack (mujoco_sim_ros2 + mujoco_ros2_control + mujoco_bridge); skipped on a real-robot build
+src/sim/    sim2sim backends (skipped on a real-robot build): mujoco_bridge (default,
+            self-contained) + opt-in gazebo_bridge / webots_bridge
 config/     <robot>/controllers.yaml + *.onnx — per-robot policy, read by rl_inference
 scripts/    shell launchers: setup · run_sim · run_policy · run_teleop
 vendor/     lodepng (source dep for the MuJoCo build)
@@ -60,7 +61,18 @@ matching `_obs_*` method.
 
 ## Dependencies
 
-System **ROS 2 Humble** + pip (`requirements.txt`, handled by `setup.sh`). No external workspace required.
+System **ROS 2 Humble** + pip (`requirements.txt`, handled by `setup.sh`). The default
+(MuJoCo) backend is self-contained — no external workspace required.
+
+**Optional sim backends** — off by default; install the simulator, then build it in:
+
+| Backend | Build | Extra install |
+|---|---|---|
+| MuJoCo | `setup.sh` (default) | none (pip `mujoco`) |
+| Gazebo | `setup.sh --with-gazebo` | gazebo classic + `ros-humble-gazebo-ros2-control` |
+| Webots | `setup.sh --with-webots` | Webots R2025a + `ros-humble-webots-ros2` |
+
+Then: `run_sim.sh --backend gazebo|webots` (webots also takes `--terrain empty_world|stairs|uneven`).
 
 ## Troubleshooting
 

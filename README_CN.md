@@ -15,10 +15,10 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 
 ```bash
 # 前置:系统已安装 ROS 2 Humble
-./scripts/setup.sh                          # pip 依赖 + colcon build
+./scripts/setup.sh                          # pip 依赖 + colcon build(默认:自包含 mujoco)
 
 # sim2sim(三个终端):
-./scripts/run_sim.sh                        # Mujoco 仿真(--backend webots 切换后端,--robot 切换机型)
+./scripts/run_sim.sh                        # Mujoco(默认);--backend gazebo|webots、--robot、--terrain(webots)
 ./scripts/run_policy.sh rl_flat_lab d1      # 策略(可选项见"机型支持")
 ./scripts/run_teleop.sh                     # 遥控:ws 前后 · ad 转向 · qe 平移 · rf 升降 · 空格停 · x 退出
 
@@ -29,7 +29,8 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 ```
 deploy/     Python 应用:policy_engine(大脑)+ rl_inference(ROS 壳)+ joy_mapping + teleop
 src/robot/  自己的 ROS 包:ddt_msgs、topic_command_controller(透传)、<robot>_description(URDF/xacro + MJCF)
-src/sim/    MuJoCo sim2sim 仿真栈(mujoco_sim_ros2 + mujoco_ros2_control + mujoco_bridge);真机构建时整个跳过
+src/sim/    sim2sim 后端(真机构建时整个跳过):mujoco_bridge(默认,自包含)
+            + 可选 gazebo_bridge / webots_bridge
 config/     <robot>/controllers.yaml + *.onnx —— 每机型策略,rl_inference 读
 scripts/    shell 启动器:setup · run_sim · run_policy · run_teleop
 vendor/     lodepng(MuJoCo 构建的源码依赖)
@@ -55,7 +56,17 @@ vendor/     lodepng(MuJoCo 构建的源码依赖)
 
 ## 依赖
 
-系统 **ROS 2 Humble** + pip(`requirements.txt`,由 `setup.sh` 统一处理)。无需任何外部工作空间。
+系统 **ROS 2 Humble** + pip(`requirements.txt`,由 `setup.sh` 统一处理)。默认(MuJoCo)后端自包含,无需任何外部工作空间。
+
+**可选仿真后端** —— 默认关闭;先装好仿真器,再编译进来:
+
+| 后端 | 编译 | 额外安装 |
+|---|---|---|
+| MuJoCo | `setup.sh`(默认) | 无(pip `mujoco`) |
+| Gazebo | `setup.sh --with-gazebo` | gazebo classic + `ros-humble-gazebo-ros2-control` |
+| Webots | `setup.sh --with-webots` | Webots R2025a + `ros-humble-webots-ros2` |
+
+然后:`run_sim.sh --backend gazebo|webots`(webots 还可加 `--terrain empty_world|stairs|uneven`)。
 
 ## 故障排查
 
