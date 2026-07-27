@@ -19,7 +19,7 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
 pluginlib_export_plugin_description_file(gazebo_ros2_control gazebo_bridge_plugin.xml)
 
 ## Install
-install(DIRECTORY config launch worlds DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY launch worlds DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

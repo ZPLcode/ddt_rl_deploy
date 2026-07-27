@@ -11,5 +11,11 @@
     <include>
       <uri>model://ground_plane</uri>
     </include>
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>2.5 -2.5 1.8 0 0.35 2.35</pose>
+        <view_controller>orbit</view_controller>
+      </camera>
+    </gui>
   </world>
 </sdf>

@@ -17,6 +17,7 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 ```bash
 # Prerequisite: system ROS 2 Humble installed
 ./scripts/setup.sh                          # pip deps + colcon build (default: self-contained mujoco)
+                                            # add gazebo/webots: --with-gazebo | --with-webots | --with-all (see Dependencies)
 
 # sim2sim (three terminals):
 ./scripts/run_sim.sh                        # Mujoco (default); --backend gazebo|webots, --robot, --terrain (webots)
@@ -30,29 +31,29 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 ## Layout
 
 ```
-deploy/     Python app: policy_engine (brain) + rl_inference (ROS shell) + joy_mapping + teleop
-src/robot/  our ROS pkgs: ddt_msgs, topic_command_controller (passthrough), <robot>_description (URDF/xacro + MJCF)
-src/sim/    sim2sim backends (skipped on a real-robot build): mujoco_bridge (default,
-            self-contained) + opt-in gazebo_bridge / webots_bridge
-config/     <robot>/controllers.yaml + *.onnx — per-robot policy, read by rl_inference
-scripts/    shell launchers: setup · run_sim · run_policy · run_teleop
-vendor/     lodepng (source dep for the MuJoCo build)
+src/description/  robot models: meshes + xacro + MuJoCo XML
+src/config/       installable deployment resources: one YAML + ONNX policies
+src/control/      ddt_msgs + topic controller + Python policy/teleop application
+src/sim/          MuJoCo (self-contained) + optional Gazebo / Webots bridges
+scripts/          setup · run_sim · run_policy · run_teleop
+vendor/           lodepng source dependency for the MuJoCo build
 ```
 
 ## Adding a robot
 
-Add two files, then run with `--robot <robot>`. No code changes **if** the policy
+Add two packages, then run with `--robot <robot>`. No code changes **if** the policy
 uses observations the engine already has (see `_OBS_SPECS` in
-`deploy/policy_engine.py`); a new observation type means one entry there plus a
+`src/control/inference/policy_engine.py`); a new observation type means one entry there plus a
 matching `_obs_*` method.
 
-- **`src/robot/<robot>_description/`** — an ament package (model on `src/robot/d1_description`):
+- **`src/description/<robot>_description/`** — an ament package (model on `src/description/d1_description`):
   `xacro/robot.xacro` + `xacro/ros2control.xacro` (declares the per-joint
   position/velocity/effort/kp/kd command interfaces + the `trunk_imu` sensor),
   and `mujoco/scene.xml` + `robot.xml` (IMU sensors
   `trunk_quat`/`trunk_gyro`/`trunk_accel`).
-- **`config/<robot>/`** — `controllers.yaml` (policy params rl_inference reads:
-  `joints`, per-policy obs / scales / gains) + the `*.onnx`.
+- **`src/config/<robot>_deploy/`** — a resource-only ament package containing
+  one `config/deploy.yaml` shared by every simulator and `rl_inference`, plus
+  the referenced `*.onnx` policies.
 
 ```bash
 ./scripts/run_sim.sh --robot <robot>
@@ -71,6 +72,7 @@ System **ROS 2 Humble** + pip (`requirements.txt`, handled by `setup.sh`). The d
 | MuJoCo | `setup.sh` (default) | none (pip `mujoco`) |
 | Gazebo | `setup.sh --with-gazebo` | gazebo classic + `ros-humble-gazebo-ros2-control` |
 | Webots | `setup.sh --with-webots` | Webots R2025a + `ros-humble-webots-ros2` |
+| Both | `setup.sh --with-all` | both of the above |
 
 Then: `run_sim.sh --backend gazebo|webots` (webots also takes `--terrain empty_world|stairs|uneven`).
 
@@ -80,6 +82,7 @@ Then: `run_sim.sh --backend gazebo|webots` (webots also takes `--terrain empty_w
 
 ## Known limitations
 
-- No scripted stand-up: the node starts directly in RL mode, so the robot must begin from a stand-ready pose (sim spawn pose / a manually held robot); an inverted robot requires a manual reset.
-- Webots d1 stand shows sim2sim contact difference — **Mujoco is the reference for policy validation**.
+- Simulation spawns in a standing pose and actively holds it until the first policy
+  joint command arrives. There is still no stand-up or self-righting motion: real
+  hardware must be placed in a stand-ready pose, and an inverted robot needs a manual reset.
 - Train→deploy config is still copied manually; automatic manifest export is TODO.

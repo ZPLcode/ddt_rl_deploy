@@ -15,6 +15,7 @@ from launch.actions import OpaqueFunction
 def launch_setup(context, *args, **kwargs):
     robot_name = LaunchConfiguration("robot").perform(context)
     ns = LaunchConfiguration("ns").perform(context)
+    config_file = LaunchConfiguration("config_file").perform(context)
 
     # Get world file path
     world_file = os.path.join(
@@ -52,7 +53,7 @@ def launch_setup(context, *args, **kwargs):
             "-y",
             "0.",
             "-z",
-            "0.65",
+            "0.47",
         ],
         output="screen",
     )
@@ -64,11 +65,12 @@ def launch_setup(context, *args, **kwargs):
     )
 
     robot_description = xacro.process_file(
-        robot_xacro_path, mappings={"hw_env": "gazebo"}
+        robot_xacro_path,
+        mappings={"hw_env": "gazebo", "controller_config": config_file},
     ).toxml()
 
     # Replace package:// URIs for the description packages present in this repo
-    description_packages = ["d1_description", "d1h_description"]
+    description_packages = ["d1_description"]
     for desc_pkg in description_packages:
         robot_description = robot_description.replace(
             "package://" + desc_pkg,
@@ -135,6 +137,17 @@ def generate_launch_description():
             "robot",
             default_value="d1",
             description="robot name -> <robot>_description package",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            "config_file",
+            default_value=os.path.join(
+                get_package_share_directory("d1_deploy"),
+                "config",
+                "deploy.yaml",
+            ),
+            description="Shared robot deployment YAML",
         )
     )
     declared_arguments.append(

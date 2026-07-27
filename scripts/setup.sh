@@ -40,10 +40,9 @@ echo "[2/2] colcon build (backends: $BACKENDS)..."
 source "$REPO/env.sh" >/dev/null
 IGNORE_ARG=()
 if [ ${#IGNORE[@]} -gt 0 ]; then IGNORE_ARG=(--packages-ignore "${IGNORE[@]}"); fi
-# The mujoco sim app links pip mujoco via a CMake shim (no vendored source) and
-# reuses the bundled lodepng, so the mujoco build needs no network / MuJoCo source.
+# mujoco_bridge links pip MuJoCo directly and reuses the bundled lodepng, so
+# its build needs neither network access nor a separate MuJoCo source tree.
 (cd "$REPO" && colcon build "${IGNORE_ARG[@]}" \
-    --cmake-args -DFETCHCONTENT_SOURCE_DIR_LODEPNG="$REPO/vendor/lodepng" \
-                 -DFETCHCONTENT_FULLY_DISCONNECTED=ON)
+    --cmake-args -DFETCHCONTENT_SOURCE_DIR_LODEPNG="$REPO/vendor/lodepng")
 
 echo "setup complete."

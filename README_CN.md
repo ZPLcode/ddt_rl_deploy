@@ -16,6 +16,7 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 ```bash
 # 前置:系统已安装 ROS 2 Humble
 ./scripts/setup.sh                          # pip 依赖 + colcon build(默认:自包含 mujoco)
+                                            # 加 gazebo/webots:--with-gazebo | --with-webots | --with-all(见"依赖")
 
 # sim2sim(三个终端):
 ./scripts/run_sim.sh                        # Mujoco(默认);--backend gazebo|webots、--robot、--terrain(webots)
@@ -27,27 +28,27 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 ## 结构
 
 ```
-deploy/     Python 应用:policy_engine(大脑)+ rl_inference(ROS 壳)+ joy_mapping + teleop
-src/robot/  自己的 ROS 包:ddt_msgs、topic_command_controller(透传)、<robot>_description(URDF/xacro + MJCF)
-src/sim/    sim2sim 后端(真机构建时整个跳过):mujoco_bridge(默认,自包含)
-            + 可选 gazebo_bridge / webots_bridge
-config/     <robot>/controllers.yaml + *.onnx —— 每机型策略,rl_inference 读
-scripts/    shell 启动器:setup · run_sim · run_policy · run_teleop
-vendor/     lodepng(MuJoCo 构建的源码依赖)
+src/description/  机器人模型:mesh + xacro + MuJoCo XML
+src/config/       可安装部署资源:一份 YAML + ONNX 策略
+src/control/      ddt_msgs + topic 控制器 + Python 策略/遥控应用
+src/sim/          MuJoCo(自包含)+ 可选 Gazebo / Webots bridge
+scripts/          setup · run_sim · run_policy · run_teleop
+vendor/           MuJoCo 构建使用的 lodepng 源码依赖
 ```
 
 ## 新增机型
 
-放入两份文件,再用 `--robot <robot>` 运行。**若**策略用的观测都是引擎已有的
-(见 `deploy/policy_engine.py` 的 `_OBS_SPECS`),则无需改代码;用到新观测则需在
+放入两个包,再用 `--robot <robot>` 运行。**若**策略用的观测都是引擎已有的
+(见 `src/control/inference/policy_engine.py` 的 `_OBS_SPECS`),则无需改代码;用到新观测则需在
 那里加一条 + 一个对应的 `_obs_*` 函数。
 
-- **`src/robot/<robot>_description/`** —— 一个 ament 包(照 `src/robot/d1_description` 建):
+- **`src/description/<robot>_description/`** —— 一个 ament 包(照 `src/description/d1_description` 建):
   `xacro/robot.xacro` + `xacro/ros2control.xacro`(声明每关节 position/velocity/
   effort/kp/kd 命令接口 + `trunk_imu` 传感器),以及 `mujoco/scene.xml` + `robot.xml`
   (IMU 传感器 `trunk_quat`/`trunk_gyro`/`trunk_accel`)。
-- **`config/<robot>/`** —— `controllers.yaml`(rl_inference 读的策略参数:`joints`、
-  每策略的观测/scale/增益)+ `*.onnx`。
+- **`src/config/<robot>_deploy/`** —— 只放部署资源的 ament 包；其中唯一的
+  `config/deploy.yaml` 由所有仿真器和 `rl_inference` 共用，旁边放它引用的
+  `*.onnx` 策略。
 
 ```bash
 ./scripts/run_sim.sh --robot <robot>
@@ -65,6 +66,7 @@ vendor/     lodepng(MuJoCo 构建的源码依赖)
 | MuJoCo | `setup.sh`(默认) | 无(pip `mujoco`) |
 | Gazebo | `setup.sh --with-gazebo` | gazebo classic + `ros-humble-gazebo-ros2-control` |
 | Webots | `setup.sh --with-webots` | Webots R2025a + `ros-humble-webots-ros2` |
+| 两者 | `setup.sh --with-all` | 上面两项都装 |
 
 然后:`run_sim.sh --backend gazebo|webots`(webots 还可加 `--terrain empty_world|stairs|uneven`)。
 
@@ -74,6 +76,6 @@ vendor/     lodepng(MuJoCo 构建的源码依赖)
 
 ## 已知限制
 
-- 无脚本起身:节点上电直接进入 RL 模式,机器人须从可站立姿态开始(仿真初始位姿 / 人工扶持);机身翻覆时需人工扶正。
-- Webots 后端 d1 站立有 sim2sim 差异,**策略验证以 Mujoco 为准**。
+- 仿真会以站姿生成,并在第一条策略关节命令到达前主动保持该姿态。
+  仍无翻身/起身动作:真机须人工扶到可站姿态,仿真或真机翻覆后也需人工复位。
 - 训练→部署配置仍需手工抄写。

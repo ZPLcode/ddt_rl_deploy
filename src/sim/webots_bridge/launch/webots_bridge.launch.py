@@ -17,6 +17,7 @@ import xacro
 def launch_setup(context, *args, **kwargs):
     robot_name = LaunchConfiguration("robot").perform(context)
     ns = LaunchConfiguration("ns").perform(context)
+    config_file = LaunchConfiguration("config_file").perform(context)
 
     robot_xacro_path = os.path.join(
         get_package_share_directory(robot_name + "_description"),
@@ -31,7 +32,7 @@ def launch_setup(context, *args, **kwargs):
         name=robot_name,
         robot_description=robot_description,
         # relative_path_prefix=os.path.join(robot_name + "_description", 'resource'),
-        translation="0 0 0.4",
+        translation="0 0 0.47",
         rotation="0 0 0 0",
     )
 
@@ -43,19 +44,13 @@ def launch_setup(context, *args, **kwargs):
         ros2_supervisor=True,
     )
 
-    robot_controllers = os.path.join(
-        get_package_share_directory("webots_bridge"),
-        "config",
-        "controllers.yaml",
-    )
-
     tita_driver = WebotsController(
         robot_name=robot_name,
         parameters=[
             {"robot_description": robot_description},
             {"use_sim_time": True},
             {"set_robot_state_publisher": False},
-            robot_controllers,
+            config_file,
         ],
         respawn=True,
         namespace=ns,
@@ -113,8 +108,18 @@ def launch_setup(context, *args, **kwargs):
                             robot_state_pub_node,
                             tita_driver,
                             joint_state_broadcaster_spawner,
-                            imu_sensor_broadcaster_spawner,
-                            joint_command_controller_spawner,
+                            launch.actions.RegisterEventHandler(
+                                event_handler=launch.event_handlers.OnProcessExit(
+                                    target_action=joint_state_broadcaster_spawner,
+                                    on_exit=[imu_sensor_broadcaster_spawner],
+                                )
+                            ),
+                            launch.actions.RegisterEventHandler(
+                                event_handler=launch.event_handlers.OnProcessExit(
+                                    target_action=imu_sensor_broadcaster_spawner,
+                                    on_exit=[joint_command_controller_spawner],
+                                )
+                            ),
                         ],
                     ),
                 )
@@ -128,18 +133,10 @@ def launch_setup(context, *args, **kwargs):
         )
     )
 
-    ros2_reset_handler = launch.actions.RegisterEventHandler(
-        event_handler=launch.event_handlers.OnProcessExit(
-            target_action=webots._supervisor,
-            on_exit=get_ros2_nodes,
-        )
-    )
-
     return [
         webots,
         webots._supervisor,
         webots_event_handler,
-        ros2_reset_handler,
     ] + get_ros2_nodes()
 
 
@@ -150,6 +147,17 @@ def generate_launch_description():
             "robot",
             default_value="d1",
             description="robot name -> <robot>_description package",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            "config_file",
+            default_value=os.path.join(
+                get_package_share_directory("d1_deploy"),
+                "config",
+                "deploy.yaml",
+            ),
+            description="Shared robot deployment YAML",
         )
     )
     declared_arguments.append(

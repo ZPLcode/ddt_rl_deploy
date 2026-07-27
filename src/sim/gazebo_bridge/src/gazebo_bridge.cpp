@@ -297,14 +297,14 @@ void GazeboBridge::registerJoints(
         this->dataPtr_->command_interfaces_.emplace_back(
           joint_name + suffix, usr_gazebo_ros2_control::HW_IF_POSITION_GAIN,
           &this->dataPtr_->Kp_cmd_[j]);
-        this->dataPtr_->Kp_cmd_[j] = 0.0;
+        this->dataPtr_->Kp_cmd_[j] = get_initial_value(joint_info.command_interfaces[i]);
       }
       if (joint_info.command_interfaces[i].name == "kd") {
         RCLCPP_INFO_STREAM(this->nh_->get_logger(), "\t\t kd");
         this->dataPtr_->command_interfaces_.emplace_back(
           joint_name + suffix, usr_gazebo_ros2_control::HW_IF_VELOCITY_GAIN,
           &this->dataPtr_->Kd_cmd_[j]);
-        this->dataPtr_->Kd_cmd_[j] = 0.0;
+        this->dataPtr_->Kd_cmd_[j] = get_initial_value(joint_info.command_interfaces[i]);
       }
     }
   }

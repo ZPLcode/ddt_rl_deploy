@@ -1,45 +1,28 @@
-## b2w_urdf
-This repository contains the urdf model of b2w.
+# mujoco_bridge
 
+Self-contained MuJoCo backend for `ddt_rl_deploy`.
 
-## Build the library
-Create a new catkin workspace:
-```
-# Create the directories
-# Do not forget to change <...> parts
-mkdir -p <directory_to_ws>/<catkin_ws_name>/src
-cd <directory_to_ws>/<catkin_ws_name>/
+This single ROS 2 package contains:
 
-# Initialize the catkin workspace
-catkin init
-```
+- the MuJoCo `simulate` application and physics-plugin interface;
+- the `ros2_control` physics and hardware plugins;
+- controller configuration and the backend launch file;
+- an internal CMake adapter for the pip-installed MuJoCo library.
 
-Clone library:
-```
-# Navigate to the directory of src
-# Do not forget to change <...> parts
-cd <directory_to_ws>/<catkin_ws_name>/src
-git clone git@github.com:unitreerobotics
+Build it with:
+
+```bash
+./scripts/setup.sh
 ```
 
-Build:
-```
-# Build it
-catkin build
+Run it with:
 
-# Source it
-source <directory_to_ws>/<catkin_ws_name>/devel/setup.bash
+```bash
+./scripts/run_sim.sh --backend mujoco
 ```
 
+The public plugin class names retain their upstream
+`mujoco_sim_ros2`/`mujoco_ros2_control` C++ namespaces for compatibility, but
+there are no longer separate ROS packages with those names.
 
-
-## Run the library
-```
-# Show urdf model of b2w in Rviz
-roslaunch wl4_description display.launch
-
-```
-
-## support issac
-
-
+The upstream `mujoco_sim_ros2` notes are retained under `docs/`.

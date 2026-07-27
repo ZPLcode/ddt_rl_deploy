@@ -16,6 +16,7 @@ from launch_ros.substitutions import FindPackageShare
 def launch_setup(context, *args, **kwargs):
     robot_name = LaunchConfiguration("robot").perform(context)
     ns = LaunchConfiguration("ns").perform(context)
+    config_file = LaunchConfiguration("config_file").perform(context)
     robot_xacro_path = os.path.join(
         get_package_share_directory(robot_name + "_description"),
         "xacro",
@@ -30,20 +31,14 @@ def launch_setup(context, *args, **kwargs):
         "<plugin>mujoco_ros2_control/MujocoSystem</plugin>",
     )
 
-    robot_controllers = os.path.join(
-        get_package_share_directory("mujoco_bridge"),
-        "config",
-        "controllers.yaml",
-    )
-
     mujoco_simulate_app = Node(
-        package='mujoco_sim_ros2',
+        package='mujoco_bridge',
         executable='mujoco_sim',
         parameters=[
             {"model_package": robot_name + "_description"},
             {"model_file": "mujoco/scene.xml"},
             {"physics_plugins": ["mujoco_ros2_control::MujocoRos2ControlPlugin"]},
-            robot_controllers
+            config_file
         ],
         output='screen')
 
@@ -114,6 +109,17 @@ def generate_launch_description():
             "robot",
             default_value="d1",
             description="robot name -> <robot>_description package",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            "config_file",
+            default_value=os.path.join(
+                get_package_share_directory("d1_deploy"),
+                "config",
+                "deploy.yaml",
+            ),
+            description="Shared robot deployment YAML",
         )
     )
     declared_arguments.append(

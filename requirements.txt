@@ -1,8 +1,8 @@
-# pip dependencies for deploy/ + the vendored MuJoCo sim bridge.
+# pip dependencies for src/control/policy/ + the vendored MuJoCo sim bridge.
 # numpy is intentionally NOT pinned here: ROS Humble's Python bindings need the
 # system numpy, so scripts/setup.sh reverts to it after installing these wheels.
-# mujoco is pinned to 3.3: the sim bridge links pip's libmujoco.so via a CMake
-# shim, and the vendored mujoco_sim_ros2 app is written against the 3.3 API.
+# mujoco is pinned to 3.3: mujoco_bridge links pip's libmujoco.so directly,
+# and its bundled simulate application is written against the 3.3 API.
 mujoco==3.3.*
 onnxruntime>=1.16,<2
 pyyaml>=6,<7

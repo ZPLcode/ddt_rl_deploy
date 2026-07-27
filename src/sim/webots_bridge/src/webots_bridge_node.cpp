@@ -59,7 +59,20 @@ void WebotsBridge::init(
     for (hardware_interface::InterfaceInfo stateInterface : component.state_interfaces) {
       if (stateInterface.name == "position" && !stateInterface.initial_value.empty()) {
         joint.position = std::stod(stateInterface.initial_value);
+        joint.positionCommand = joint.position;
         wb_motor_set_position(joint.motor, std::stod(stateInterface.initial_value));
+      }
+    }
+    // Use command-interface initial values immediately, before the controller
+    // spawner takes ownership. This prevents the robot from falling during the
+    // short startup window between hardware initialization and activation.
+    for (const hardware_interface::InterfaceInfo & commandInterface :
+         component.command_interfaces) {
+      if (commandInterface.initial_value.empty()) continue;
+      if (commandInterface.name == "kp") {
+        joint.kp = std::stod(commandInterface.initial_value);
+      } else if (commandInterface.name == "kd") {
+        joint.kd = std::stod(commandInterface.initial_value);
       }
     }
 
