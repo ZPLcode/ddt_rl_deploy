@@ -28,29 +28,34 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 ## 结构
 
 ```
-src/description/  机器人模型:mesh + xacro + MuJoCo XML
-src/config/       可安装部署资源:一份 YAML + ONNX 策略
+src/description/  机器人模型,每机型一个 ament 包:mesh + xacro + MuJoCo XML
+src/config/       每机型一个文件夹(非包):<robot>/deploy.yaml + ONNX 策略
 src/control/      ddt_msgs + topic 控制器 + Python 策略/遥控应用
 src/sim/          MuJoCo(自包含)+ 可选 Gazebo / Webots bridge
-scripts/          setup · run_sim · run_policy · run_teleop
+scripts/          setup · run_sim · run_policy · run_teleop · new_robot
 vendor/           MuJoCo 构建使用的 lodepng 源码依赖
 ```
 
 ## 新增机型
 
-放入两个包,再用 `--robot <robot>` 运行。**若**策略用的观测都是引擎已有的
+跑 `./scripts/new_robot.sh <robot>` 生成两处骨架,再往里放文件即可——**无需手写 CMakeLists**。
+然后用 `--robot <robot>` 运行。**若**策略用的观测都是引擎已有的
 (见 `src/control/inference/policy_engine.py` 的 `_OBS_SPECS`),则无需改代码;用到新观测则需在
 那里加一条 + 一个对应的 `_obs_*` 函数。
 
 - **`src/description/<robot>_description/`** —— 一个 ament 包(照 `src/description/d1_description` 建):
   `xacro/robot.xacro` + `xacro/ros2control.xacro`(声明每关节 position/velocity/
   effort/kp/kd 命令接口 + `trunk_imu` 传感器),以及 `mujoco/scene.xml` + `robot.xml`
-  (IMU 传感器 `trunk_quat`/`trunk_gyro`/`trunk_accel`)。
-- **`src/config/<robot>_deploy/`** —— 只放部署资源的 ament 包；其中唯一的
-  `config/deploy.yaml` 由所有仿真器和 `rl_inference` 共用，旁边放它引用的
-  `*.onnx` 策略。
+  (IMU 传感器 `trunk_quat`/`trunk_gyro`/`trunk_accel`)。**必须是包**:xacro `$(find …)`、
+  `package://` 网格、MuJoCo `model_package` 都靠它解析。
+- **`src/config/<robot>/`** —— 一个普通文件夹(**非包**):唯一的 `deploy.yaml`
+  由所有仿真器和 `rl_inference` 共用,旁边放它引用的 `*.onnx` 策略。按路径解析
+  (`src/config/<robot>/deploy.yaml`),**无需编译**。
 
 ```bash
+./scripts/new_robot.sh <robot>          # 生成 description 包 + config 文件夹
+# ... 放模型文件 + deploy.yaml + onnx ...
+./scripts/setup.sh
 ./scripts/run_sim.sh --robot <robot>
 ./scripts/run_policy.sh <policy> <robot>
 ```

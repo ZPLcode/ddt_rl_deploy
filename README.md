@@ -31,31 +31,36 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 ## Layout
 
 ```
-src/description/  robot models: meshes + xacro + MuJoCo XML
-src/config/       installable deployment resources: one YAML + ONNX policies
+src/description/  robot models, one ament package per robot: meshes + xacro + MuJoCo XML
+src/config/       per-robot folder (NOT a package): <robot>/deploy.yaml + ONNX policies
 src/control/      ddt_msgs + topic controller + Python policy/teleop application
 src/sim/          MuJoCo (self-contained) + optional Gazebo / Webots bridges
-scripts/          setup · run_sim · run_policy · run_teleop
+scripts/          setup · run_sim · run_policy · run_teleop · new_robot
 vendor/           lodepng source dependency for the MuJoCo build
 ```
 
 ## Adding a robot
 
-Add two packages, then run with `--robot <robot>`. No code changes **if** the policy
-uses observations the engine already has (see `_OBS_SPECS` in
-`src/control/inference/policy_engine.py`); a new observation type means one entry there plus a
-matching `_obs_*` method.
+Run `./scripts/new_robot.sh <robot>` to scaffold both locations, then drop in
+files — no CMakeLists to hand-write. Then run with `--robot <robot>`. No code
+changes **if** the policy uses observations the engine already has (see
+`_OBS_SPECS` in `src/control/inference/policy_engine.py`); a new observation type
+means one entry there plus a matching `_obs_*` method.
 
 - **`src/description/<robot>_description/`** — an ament package (model on `src/description/d1_description`):
   `xacro/robot.xacro` + `xacro/ros2control.xacro` (declares the per-joint
   position/velocity/effort/kp/kd command interfaces + the `trunk_imu` sensor),
   and `mujoco/scene.xml` + `robot.xml` (IMU sensors
-  `trunk_quat`/`trunk_gyro`/`trunk_accel`).
-- **`src/config/<robot>_deploy/`** — a resource-only ament package containing
-  one `config/deploy.yaml` shared by every simulator and `rl_inference`, plus
-  the referenced `*.onnx` policies.
+  `trunk_quat`/`trunk_gyro`/`trunk_accel`). Must be a package: xacro `$(find …)`,
+  `package://` meshes and the MuJoCo `model_package` all resolve through it.
+- **`src/config/<robot>/`** — a plain folder (no package): one `deploy.yaml`
+  shared by every simulator and `rl_inference`, plus the referenced `*.onnx`
+  policies. Resolved by path (`src/config/<robot>/deploy.yaml`), so nothing to build.
 
 ```bash
+./scripts/new_robot.sh <robot>          # scaffold description package + config folder
+# ... add model files + deploy.yaml + onnx ...
+./scripts/setup.sh
 ./scripts/run_sim.sh --robot <robot>
 ./scripts/run_policy.sh <policy> <robot>
 ```

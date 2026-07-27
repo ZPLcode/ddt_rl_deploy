@@ -18,6 +18,10 @@ def launch_setup(context, *args, **kwargs):
     robot_name = LaunchConfiguration("robot").perform(context)
     ns = LaunchConfiguration("ns").perform(context)
     config_file = LaunchConfiguration("config_file").perform(context)
+    if not config_file:
+        raise RuntimeError(
+            "config_file is required: pass config_file:=<path>/deploy.yaml "
+            "(scripts/run_sim.sh sets it automatically)")
 
     robot_xacro_path = os.path.join(
         get_package_share_directory(robot_name + "_description"),
@@ -152,11 +156,7 @@ def generate_launch_description():
     declared_arguments.append(
         launch.actions.DeclareLaunchArgument(
             "config_file",
-            default_value=os.path.join(
-                get_package_share_directory("d1_deploy"),
-                "config",
-                "deploy.yaml",
-            ),
+            default_value="",   # config is a plain folder, not a package; run_sim.sh passes the path
             description="Shared robot deployment YAML",
         )
     )

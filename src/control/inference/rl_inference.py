@@ -181,9 +181,12 @@ class RLInferenceNode(Node):
         self._obs_names   = list(y('observations_name', 'observations_name'))
         self._cmd_names   = list(y('commands_name',     'commands_name'))
         self._cmd_scale   = np.array(y('commands_scale', 'commands_scale'), dtype=np.float32)
-        self._cmd_gain    = np.array(y('commands_gain',  'commands_gain'),  dtype=np.float32)
         self._cmd_min     = np.array(y('min_commands',   'min_commands'),   dtype=np.float32)
         self._cmd_max     = np.array(y('max_commands',   'max_commands'),   dtype=np.float32)
+        # commands_gain is an optional per-command multiplier (default 1.0 each).
+        _gain = np.array(y('commands_gain', 'commands_gain'), dtype=np.float32)
+        self._cmd_gain = np.ones(len(self._cmd_names), dtype=np.float32)
+        self._cmd_gain[:len(_gain)] = _gain
         self._ang_vel_scale = float(y('ang_vel_scale', 'ang_vel_scale'))
         self._dof_pos_scale = float(y('dof_pos_scale', 'dof_pos_scale'))
         self._dof_vel_scale = float(y('dof_vel_scale', 'dof_vel_scale'))

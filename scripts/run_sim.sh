@@ -26,14 +26,10 @@ done
     echo "error: repo not built — run ./scripts/setup.sh first" >&2; exit 1; }
 source "$REPO/env.sh" >/dev/null
 export DISPLAY="${DISPLAY:-:0}"    # the sim opens a GUI window
-CONFIG_PACKAGE="${ROBOT}_deploy"
-if ! CONFIG_SHARE="$(ros2 pkg prefix --share "$CONFIG_PACKAGE" 2>/dev/null)"; then
-    echo "error: no deploy package for '$ROBOT': $CONFIG_PACKAGE" >&2
-    exit 1
-fi
-CONFIG_FILE="$CONFIG_SHARE/config/deploy.yaml"
+# Config is a plain folder src/config/<robot>/ (no ROS package), resolved by path.
+CONFIG_FILE="$REPO/src/config/$ROBOT/deploy.yaml"
 [ -f "$CONFIG_FILE" ] || {
-    echo "error: deploy config is not installed: $CONFIG_FILE" >&2
+    echo "error: no config for robot '$ROBOT': expected $CONFIG_FILE" >&2
     exit 1
 }
 
