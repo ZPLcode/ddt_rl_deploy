@@ -96,6 +96,7 @@ class PolicyConfig:
     joint_names: list
     episode_length: float
     control_dt: float
+    initial_height: float = 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -110,6 +111,8 @@ _OBS_SPECS = {
     'ang_vel':          (3,                                                   '_obs_ang_vel'),
     'gravity':          (3,                                                   '_obs_gravity'),
     'commands':         (lambda cfg: len(cfg.cmd_names),                      '_obs_commands'),
+    'velocity_commands': (3,                                                  '_obs_velocity_commands'),
+    'height_commands':  (1,                                                   '_obs_height_commands'),
     'dof_pos':          (lambda cfg: cfg.num_actions,                         '_obs_dof_pos'),
     'dof_pos_nwp':      (lambda cfg: cfg.num_actions - len(cfg.wheel_joints), '_obs_dof_pos_nwp'),
     'dof_vel':          (lambda cfg: cfg.num_actions,                         '_obs_dof_vel'),
@@ -159,8 +162,23 @@ class PolicyEngine:
             expected = [[1, obs_dim], [1, cfg.history_len, obs_dim]]
         elif cfg.policy_type == 'ppo':
             expected = [[1, (cfg.history_len + 1) * obs_dim]]
+        elif cfg.policy_type == 'cts_moe':
+            expected_obs = [
+                'ang_vel', 'gravity', 'velocity_commands', 'height_commands',
+                'dof_pos', 'dof_vel', 'last_actions',
+            ]
+            expected_cmds = ['lin_vel_x', 'lin_vel_y', 'ang_vel_z', 'base_height']
+            if (cfg.obs_names != expected_obs or cfg.cmd_names != expected_cmds
+                    or cfg.history_len != 10 or cfg.num_actions != 16
+                    or cfg.control_type != 'P_V'):
+                raise ValueError('cts_moe requires the D1 58-observation layout, '
+                                 '10 history frames, 16 actions, and P_V control')
+            expected = [[1, cfg.history_len * obs_dim]]
         else:              
             return
+        if len(ins) != len(expected):
+            raise ValueError(f'model/config mismatch: expected {len(expected)} model '
+                             f'inputs, got {len(ins)}')
         for inp, exp in zip(ins, expected):
             got = ints(inp.shape)
             if got and got != exp:
@@ -170,6 +188,12 @@ class PolicyEngine:
                     f'(observations_name sums to {obs_dim} dims, '
                     f'history_len={cfg.history_len}, policy_type={cfg.policy_type}). '
                     f'Check that policy_name and the onnx file are a matching pair.')
+        if cfg.policy_type == 'cts_moe':
+            outputs = self._session.get_outputs()
+            if (len(outputs) != 1 or outputs[0].name != cfg.output_name
+                    or ints(outputs[0].shape) != [1, cfg.num_actions]):
+                raise ValueError('cts_moe requires one [1, 16] model output '
+                                 f'named {cfg.output_name!r}')
 
     # ------------------------------------------------------------------ #
 
@@ -205,7 +229,7 @@ class PolicyEngine:
         self._last_actions = np.zeros(cfg.num_actions, dtype=np.float32)
 
         self._current_time = 0.0
-        self._current_height = 0.0            
+        self._current_height = cfg.initial_height
         self._infer_dt = self.cfg.control_dt   
         self._first_frame = True              
 
@@ -235,6 +259,8 @@ class PolicyEngine:
     
     def _obs_ang_vel(self, state, cmd):
         raw = state.gyro * self.cfg.ang_vel_scale
+        if self.cfg.policy_type == 'cts_moe':
+            return raw
         return 0.03 * self._obs['ang_vel'] + 0.97 * raw
 
     def _obs_gravity(self, state, cmd):
@@ -246,29 +272,42 @@ class PolicyEngine:
         cfg = self.cfg
         cmds = np.empty(len(cfg.cmd_names), dtype=np.float32)
         for i, cname in enumerate(cfg.cmd_names):
-            if cname == 'lin_vel_x':
-                raw = cfg.cmd_gain[i] * cmd.twist_linear[0]
-            elif cname == 'lin_vel_y':
-                raw = cfg.cmd_gain[i] * cmd.twist_linear[1]
-            elif cname == 'ang_vel_z':
-                raw = cfg.cmd_gain[i] * cmd.twist_angular[2]
-            elif cname == 'base_height':
-                self._current_height = float(np.clip(
-                    self._current_height + cmd.twist_linear[2] * self._infer_dt,
-                    cfg.cmd_min[i], cfg.cmd_max[i]))
-                raw = cfg.cmd_gain[i] * self._current_height
-            elif cname == 'head_roll':
-                raw = cfg.cmd_gain[i] * cmd.pose_rpy[0]
-            elif cname == 'head_pitch':
-                raw = cfg.cmd_gain[i] * cmd.pose_rpy[1]
-            elif cname == 'head_yaw':
-                raw = cfg.cmd_gain[i] * cmd.pose_rpy[2]
-            else:
-                self._warn(f'Unknown command: {cname}')
-                raw = 0.0
-            cmds[i] = float(np.clip(raw, cfg.cmd_min[i], cfg.cmd_max[i])) \
-                      * cfg.cmd_scale[i]
+            cmds[i] = self._command_value(i, cname, cmd)
         return cmds
+
+    def _command_value(self, i, cname, cmd):
+        cfg = self.cfg
+        if cname == 'lin_vel_x':
+            raw = cfg.cmd_gain[i] * cmd.twist_linear[0]
+        elif cname == 'lin_vel_y':
+            raw = cfg.cmd_gain[i] * cmd.twist_linear[1]
+        elif cname == 'ang_vel_z':
+            raw = cfg.cmd_gain[i] * cmd.twist_angular[2]
+        elif cname == 'base_height':
+            self._current_height = float(np.clip(
+                self._current_height + cmd.twist_linear[2] * self._infer_dt,
+                cfg.cmd_min[i], cfg.cmd_max[i]))
+            raw = cfg.cmd_gain[i] * self._current_height
+        elif cname == 'head_roll':
+            raw = cfg.cmd_gain[i] * cmd.pose_rpy[0]
+        elif cname == 'head_pitch':
+            raw = cfg.cmd_gain[i] * cmd.pose_rpy[1]
+        elif cname == 'head_yaw':
+            raw = cfg.cmd_gain[i] * cmd.pose_rpy[2]
+        else:
+            self._warn(f'Unknown command: {cname}')
+            raw = 0.0
+        return float(np.clip(raw, cfg.cmd_min[i], cfg.cmd_max[i])) * cfg.cmd_scale[i]
+
+    def _obs_velocity_commands(self, state, cmd):
+        return np.asarray([
+            self._command_value(i, self.cfg.cmd_names[i], cmd) for i in range(3)
+        ], dtype=np.float32)
+
+    def _obs_height_commands(self, state, cmd):
+        return np.asarray([
+            self._command_value(3, self.cfg.cmd_names[3], cmd)
+        ], dtype=np.float32)
 
     def _obs_dof_pos(self, state, cmd):
         cfg = self.cfg
@@ -343,6 +382,14 @@ class PolicyEngine:
         combined = np.concatenate([obs_hist, obs])
         return [combined[None]]
 
+    def _build_cts_moe(self):
+        """Isaac Lab term-major history: nine previous frames plus current."""
+        pieces = []
+        for name in self.cfg.obs_names:
+            pieces.append(self._obs_hist[name][1:].reshape(-1))
+            pieces.append(self._obs[name])
+        return [np.concatenate(pieces)[None]]
+
     def _build_asap(self):
         """Single input with custom ordering (newest→oldest history)."""
         sorted_hist_names = [
@@ -381,6 +428,8 @@ class PolicyEngine:
             inputs = self._build_np3o()
         elif self.cfg.policy_type == 'ppo':
             inputs = self._build_ppo()
+        elif self.cfg.policy_type == 'cts_moe':
+            inputs = self._build_cts_moe()
         elif self.cfg.policy_type == 'asap':
             inputs = self._build_asap()
         else:

@@ -74,7 +74,7 @@ class RLInferenceNode(Node):
         self.declare_parameter('config_file', '')   
         self.declare_parameter('policy_name', '')  
         self.declare_parameter('onnx_path', '')
-        self.declare_parameter('policy_type', 'np3o')       # np3o / ppo / asap
+        self.declare_parameter('policy_type', 'np3o')       # np3o / ppo / asap / cts_moe
         self.declare_parameter('output_name', 'actions')
         self.declare_parameter('num_actions', 12)
         self.declare_parameter('history_len', 10)
@@ -95,6 +95,7 @@ class RLInferenceNode(Node):
         self.declare_parameter('joint_kd', [0.0])
         self.declare_parameter('control_type', 'P')    # P or P_V
         self.declare_parameter('episode_length', 0.0)
+        self.declare_parameter('initial_height', 0.0)
         self.declare_parameter('joy_command', True)   # velocity source = raw sensor_msgs/Joy
         self.declare_parameter('joy_topic', 'joy')    # axis map/scales from a yaml `joy:` block
         # debug only: disables posture guard + staleness watchdog.
@@ -240,6 +241,7 @@ class RLInferenceNode(Node):
 
         self._control_dt = float(cfg.get('control_dt', 0.02))
         self._episode_length = float(y('episode_length', 'episode_length'))
+        self._initial_height = float(y('initial_height', 'initial_height'))
 
         self._joy_command = bool(g('joy_command').value)
         self._joy_topic = str(g('joy_topic').value)
@@ -277,6 +279,7 @@ class RLInferenceNode(Node):
             joint_names=self._joint_names,
             episode_length=self._episode_length,
             control_dt=self._control_dt,
+            initial_height=self._initial_height,
         )
 
     # ----------------------------------------------------------------------- #

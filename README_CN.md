@@ -7,7 +7,9 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 
 ## 机型支持
 
-支持 **d1** —— 策略 `rl_flat` / `rl_flat_lab` / `rl_rough_lab`,sim2sim 与 sim2real 均可。
+支持 **d1** —— 策略 `rl_flat` / `rl_flat_lab` / `rl_rough_lab`，以及 CTS MoE 策略 `rl_moe_cts`。
+`rl_moe_cts` 已接入推理；其训练 URDF 与当前 D1 MuJoCo 模型的物理参数不同，运动效果需在仿真中验证。
+模型文件放在 `src/config/d1/d1_moe_cts.onnx`。
 
 测试平台:Ubuntu 22.04 · ROS 2 Humble · Python 3.10。
 
@@ -21,6 +23,7 @@ DDT 机器人强化学习策略部署。自包含仓库:sim2sim与 sim2real共�
 # sim2sim(三个终端):
 ./scripts/run_sim.sh                        # Mujoco(默认);--backend gazebo|webots、--robot、--terrain(webots)
 ./scripts/run_policy.sh rl_flat_lab d1      # 策略(可选项见"机型支持")
+# 或用 CTS MoE 策略：./scripts/run_policy.sh rl_moe_cts d1
 ./scripts/run_teleop.sh                     # 遥控:ws 前后 · ad 转向 · qe 平移 · rf 升降 · 空格停 · x 退出
 
 ```

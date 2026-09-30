@@ -8,7 +8,9 @@ RL policy deployment for DDT robots. Self-contained repository: sim2sim and sim2
 
 ## Robots
 
-Supports **d1** — policies `rl_flat` / `rl_flat_lab` / `rl_rough_lab`, sim2sim and sim2real.
+Supports **d1** — policies `rl_flat` / `rl_flat_lab` / `rl_rough_lab`, plus `rl_moe_cts`.
+CTS MoE inference is integrated; its training URDF differs in physical parameters from the current D1 MuJoCo model, so locomotion still needs simulator validation.
+Place the model at `src/config/d1/d1_moe_cts.onnx`.
 
 Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 
@@ -22,6 +24,7 @@ Tested on Ubuntu 22.04 · ROS 2 Humble · Python 3.10.
 # sim2sim (three terminals):
 ./scripts/run_sim.sh                        # Mujoco (default); --backend gazebo|webots, --robot, --terrain (webots)
 ./scripts/run_policy.sh rl_flat_lab d1      # policy (see Robots for the list)
+# Or use CTS MoE: ./scripts/run_policy.sh rl_moe_cts d1
 ./scripts/run_teleop.sh                     # teleop: ws fwd/back · ad turn · qe strafe · rf height · space stop · x quit
 
 # sim2real: place the remote in 08 SDK Mode, run only the last two commands;
